@@ -64,6 +64,9 @@ MUJOCO_LOG.TXT
 imgui.ini
 newton/tests/outputs/
 
+# Example-generated artifacts (CSV traces, plots, etc.)
+output/
+
 # Viser recordings
 docs/_static/recordings/
 *.viser

@@ -4,18 +4,18 @@
 ###########################################################################
 # Example Hydroelastic Sphere Pair
 #
-# Minimal demonstration of the hydroelastic SDF contact pipeline.
+# Minimal hydroelastic SDF sphere-pair demo with a reduce_contacts switch.
+# The CSV trace exposes mode-dependent contact counts and dropper motion.
 #
-# A static icosphere sits on the ground; a second icosphere falls onto it
-# under gravity.  Both shapes are flagged hydroelastic, so contact runs
-# through the full SDF pipeline: broadphase -> octree iso-voxels ->
-# marching cubes contact surface -> contact generation -> reduction ->
-# MuJoCo solver.  The marching-cubes contact polygon is rendered each
-# frame via ``viewer.log_hydro_contact_surface``.
+# Run modes:
+#     python -m newton.examples hydro_sphere_pair                       # reduce on (default)
+#     python -m newton.examples hydro_sphere_pair --no-reduce-contacts  # reduce off
 #
 # Command: python -m newton.examples hydro_sphere_pair
 #
 ###########################################################################
+
+import os
 
 import numpy as np
 import trimesh
@@ -25,15 +25,15 @@ import newton
 import newton.examples
 from newton.geometry import HydroelasticSDF
 
-# Sphere geometry and scene layout
 SPHERE_RADIUS = 0.05
 """Radius of each icosphere [m]."""
-INITIAL_GAP = 0.05
-"""Initial clear-air gap between the two spheres before the drop [m]."""
+INITIAL_GAP = 0.0
+"""Initial clear-air gap between the two spheres before loading [m]."""
 ICOSPHERE_SUBDIVISIONS = 3
 """Icosphere refinement level (3 -> 1280 triangles)."""
+GRAVITY_Z = -2.0
+"""Gentle gravity used to load the reduced sphere cap without leaving the SDF narrow band [m/s^2]."""
 
-# SDF baking parameters
 SDF_MAX_RESOLUTION = 64
 """Maximum SDF grid resolution along the longest mesh axis."""
 SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
@@ -41,7 +41,6 @@ SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
 SDF_MARGIN = 0.005
 """Outward margin baked into the SDF surface [m]."""
 
-# Hydroelastic material
 KH = 1.0e9
 """Hydroelastic stiffness coefficient [Pa].
 
@@ -54,9 +53,15 @@ the SDF narrow band and the body tunnels)."""
 SPHERE_DENSITY = 191.0
 """Density [kg/m^3] chosen so a 0.05 m sphere weighs 0.1 kg, matching Drake."""
 
-# Pipeline allocation
-RIGID_CONTACT_MAX = 1024
+RIGID_CONTACT_MAX = 8192
 """Upper bound on rigid contacts allocated by the collision pipeline."""
+MUJOCO_NCONMAX = 8192
+"""MuJoCo contact buffer capacity (must be >= RIGID_CONTACT_MAX)."""
+MUJOCO_NJMAX = 16384
+"""MuJoCo constraint Jacobian row capacity (~ 3 * active contacts under elliptic cone)."""
+
+OUTPUT_DIR = os.path.join("output", "hydro_sphere_pair")
+"""Where CSV traces land, relative to the process cwd."""
 
 
 def _build_icosphere_mesh(radius, subdivisions, sdf_resolution, narrow_band_range, margin):
@@ -75,15 +80,20 @@ def _build_icosphere_mesh(radius, subdivisions, sdf_resolution, narrow_band_rang
 class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
+        self.reduce_contacts = bool(args.reduce_contacts)
+        # Close batch runs after the experiment window ends.
+        self.auto_close_after_freeze = bool(getattr(args, "test", False)) or bool(getattr(args, "headless", False))
+        self._viewer_closed = False
 
-        # Timing
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = 4
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
 
-        # Shared icosphere mesh (baked SDF) reused by both shapes.
+        # Long enough for the gentle contact load to settle.
+        self.t_end = 1.2
+
         mesh = _build_icosphere_mesh(
             radius=SPHERE_RADIUS,
             subdivisions=ICOSPHERE_SUBDIVISIONS,
@@ -103,11 +113,9 @@ class Example:
             kh=KH,
         )
 
-        builder = newton.ModelBuilder()
+        builder = newton.ModelBuilder(gravity=GRAVITY_Z)
         builder.default_shape_cfg.gap = 0.001
 
-        # Static floor sphere: attached to body=-1 (worldbody), no DoF and
-        # no joint required to hold it in place.
         builder.add_shape_mesh(
             body=-1,
             xform=wp.transform(
@@ -119,8 +127,6 @@ class Example:
             label="floor_sphere",
         )
 
-        # Falling sphere: free 6-DoF rigid body starting above the floor
-        # sphere by INITIAL_GAP of clear space.
         self.initial_dropper_z = 3.0 * SPHERE_RADIUS + INITIAL_GAP
         self.dropper_body = builder.add_body(
             xform=wp.transform(
@@ -138,11 +144,12 @@ class Example:
 
         self.model = builder.finalize()
 
-        # Collision pipeline with the marching-cubes contact polygon
-        # exposed so the viewer can render it each frame.
+        # Increase buffers so reduce-off can keep dense face contacts.
         hydro_cfg = HydroelasticSDF.Config(
             output_contact_surface=True,
-            reduce_contacts=True,
+            reduce_contacts=self.reduce_contacts,
+            buffer_mult_iso=4,
+            buffer_mult_contact=4,
         )
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
@@ -151,15 +158,14 @@ class Example:
             broad_phase="sap",
         )
 
-        # MuJoCo solver driving Newton's hydroelastic contacts.
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             use_mujoco_contacts=False,
             solver="newton",
             integrator="implicitfast",
             cone="elliptic",
-            njmax=200,
-            nconmax=200,
+            njmax=MUJOCO_NJMAX,
+            nconmax=MUJOCO_NCONMAX,
             iterations=15,
             ls_iterations=100,
             impratio=1.0,
@@ -171,15 +177,11 @@ class Example:
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # Allocate contact buffers and do one initial collide pass so the
-        # buffers are populated before the first step.
         self.contacts = self.collision_pipeline.contacts()
         self.collision_pipeline.collide(self.state_0, self.contacts)
 
-        # Viewer setup. ``show_hydro_contact_surface`` is False on the base
-        # viewer by default; flip it on so the marching-cubes contact patch
-        # rendered by ``log_hydro_contact_surface`` is actually visible.
         self.viewer.set_model(self.model)
+        self.viewer.show_contacts = True
         self.viewer.show_hydro_contact_surface = True
         self.viewer.set_camera(
             pos=wp.vec3(0.4, -0.4, 0.2),
@@ -187,10 +189,42 @@ class Example:
             yaw=135.0,
         )
 
+        self.time_log: list[float] = []
+        self.z_log: list[float] = []
+        self.vz_log: list[float] = []
+        self.depth_log: list[float] = []
+        self.face_contact_count_log: list[int] = []
+        self.rigid_contact_count_log: list[int] = []
         self.max_reduced_contacts = 0
         self.max_face_contacts = 0
 
+        self._log_state()
+
         self.capture()
+
+    def _log_state(self) -> None:
+        body_q = self.state_0.body_q.numpy()[self.dropper_body]
+        body_qd = self.state_0.body_qd.numpy()[self.dropper_body]
+        z = float(body_q[2])
+        # body_qd stores linear velocity first: (vx, vy, vz, wx, wy, wz).
+        vz = float(body_qd[2])
+        # Geometric overlap, not solver-resolved penetration.
+        depth = max(0.0, 2.0 * SPHERE_RADIUS - abs(z - SPHERE_RADIUS))
+        self.time_log.append(self.sim_time)
+        self.z_log.append(z)
+        self.vz_log.append(vz)
+        self.depth_log.append(depth)
+
+        # face_contact_count is post pre-prune when reduce_contacts=True.
+        # rigid_contact_count is the solver input after reduction.
+        rigid = int(self.contacts.rigid_contact_count.numpy()[0])
+        self.rigid_contact_count_log.append(rigid)
+        if self.collision_pipeline.hydroelastic_sdf is not None:
+            surf = self.collision_pipeline.hydroelastic_sdf.get_contact_surface()
+            face = int(surf.face_contact_count.numpy()[0])
+        else:
+            face = 0
+        self.face_contact_count_log.append(face)
 
     def capture(self):
         if wp.get_device().is_cuda:
@@ -207,13 +241,21 @@ class Example:
             self.viewer.apply_forces(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
+        # Refresh contacts so diagnostics match the advanced state.
+        self.collision_pipeline.collide(self.state_0, self.contacts)
 
     def step(self):
+        if self.sim_time >= self.t_end:
+            if self.auto_close_after_freeze and not self._viewer_closed:
+                self.viewer.close()
+                self._viewer_closed = True
+            return
         if self.graph:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
         self.sim_time += self.frame_dt
+        self._log_state()
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -223,6 +265,13 @@ class Example:
             self.viewer.log_hydro_contact_surface(
                 self.collision_pipeline.hydroelastic_sdf.get_contact_surface(),
             )
+        self.viewer.log_scalar("sim_time [s]", self.sim_time)
+        if self.z_log:
+            self.viewer.log_scalar("z_dropper [m]", self.z_log[-1])
+            self.viewer.log_scalar("vz_dropper [m/s]", self.vz_log[-1])
+            self.viewer.log_scalar("depth [m]", self.depth_log[-1])
+            self.viewer.log_scalar("face_contact_count", self.face_contact_count_log[-1])
+            self.viewer.log_scalar("rigid_contact_count", self.rigid_contact_count_log[-1])
         self.viewer.end_frame()
 
     def test_post_step(self):
@@ -234,16 +283,34 @@ class Example:
         self.max_face_contacts = max(self.max_face_contacts, raw)
 
     def test_final(self):
-        """Verify the dropper fell, was stopped by hydroelastic contact, and the pipeline produced contacts."""
-        final_z = float(self.state_0.body_q.numpy()[self.dropper_body, 2])
+        """Check that both contact modes generate stable, finite sphere-pair traces."""
+        # Verify these checks when demo behavior changes.
+        self._write_csv()
 
-        fall_threshold = self.initial_dropper_z - INITIAL_GAP + 0.005
-        assert final_z < fall_threshold, (
-            f"dropper did not fall through initial gap: final z={final_z:.4f} m, expected < {fall_threshold:.4f} m"
+        zs = np.asarray(self.z_log)
+        vzs = np.asarray(self.vz_log)
+        assert np.all(np.isfinite(zs)), "z trace contains NaN/Inf"
+        assert np.all(np.isfinite(vzs)), "vz trace contains NaN/Inf"
+
+        min_z = float(zs.min())
+        fall_threshold = self.initial_dropper_z - 0.001
+        assert min_z < fall_threshold, (
+            f"dropper never entered contact regime: min z={min_z:.4f} m, expected < {fall_threshold:.4f} m"
         )
 
-        assert final_z > SPHERE_RADIUS, (
-            f"dropper tunneled through static sphere: final z={final_z:.4f} m, expected > {SPHERE_RADIUS:.4f} m"
+        final_z = float(zs[-1])
+        final_depth = float(self.depth_log[-1])
+        final_face = int(self.face_contact_count_log[-1])
+        final_rigid = int(self.rigid_contact_count_log[-1])
+        assert final_z > 2.4 * SPHERE_RADIUS, (
+            f"dropper fell through static sphere: final z={final_z:.4f} m, expected > {2.4 * SPHERE_RADIUS:.4f} m"
+        )
+        assert 0.0 < final_depth < SDF_NARROW_BAND_RANGE[1], (
+            f"dropper ended outside the SDF narrow band: final depth={final_depth:.4f} m, "
+            f"expected in (0, {SDF_NARROW_BAND_RANGE[1]:.4f}) m"
+        )
+        assert final_face > 0 and final_rigid > 0, (
+            f"dropper ended without active contacts: final face={final_face}, final rigid={final_rigid}"
         )
 
         assert self.max_face_contacts > 0, (
@@ -254,9 +321,59 @@ class Example:
             f"no reduced contacts reached the solver during the run (max_reduced_contacts={self.max_reduced_contacts})"
         )
 
+        face = np.asarray(self.face_contact_count_log)
+        rigid = np.asarray(self.rigid_contact_count_log)
+        engaged = face > 0
+        assert engaged.any(), "no frame ever generated a hydroelastic face contact"
+        if self.reduce_contacts:
+            ratios = rigid[engaged] / face[engaged]
+            assert ratios.min() < 0.5, (
+                f"reduce_contacts=True but minimum rigid/face ratio was {float(ratios.min()):.3f} "
+                f"(>=0.5); reduction does not appear to be active"
+            )
+        else:
+            equal = rigid[engaged] == face[engaged]
+            assert equal.sum() >= max(1, int(engaged.sum() * 0.5)), (
+                f"reduce_contacts=False but rigid == face held in only "
+                f"{int(equal.sum())}/{int(engaged.sum())} engaged frames; "
+                f"reduction may still be active"
+            )
+
+    def _write_csv(self) -> None:
+        suffix = "reduce_on" if self.reduce_contacts else "reduce_off"
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        path = os.path.join(OUTPUT_DIR, f"hydro_sphere_pair_{suffix}.csv")
+        with open(path, "w") as f:
+            f.write("time_s,z_m,vz_m_per_s,depth_m,face_contact_count,rigid_contact_count\n")
+            for t, z, vz, d, face, rigid in zip(
+                self.time_log,
+                self.z_log,
+                self.vz_log,
+                self.depth_log,
+                self.face_contact_count_log,
+                self.rigid_contact_count_log,
+                strict=False,
+            ):
+                f.write(f"{t:.6f},{z:.6f},{vz:.6f},{d:.6f},{face},{rigid}\n")
+        print(f"wrote {path} ({len(self.time_log)} samples)")
+
     @staticmethod
     def create_parser():
-        return newton.examples.create_parser()
+        parser = newton.examples.create_parser()
+        parser.set_defaults(num_frames=160)
+        import argparse  # noqa: PLC0415
+
+        parser.add_argument(
+            "--reduce-contacts",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help=(
+                "Enable HydroelasticSDF.Config.reduce_contacts (default True, matching "
+                "Newton's shipped examples). Use --no-reduce-contacts to keep all "
+                "marching-cubes face contacts."
+            ),
+        )
+        return parser
 
 
 if __name__ == "__main__":
