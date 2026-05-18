@@ -776,6 +776,22 @@ add_example_test(
     use_viewer=True,
     test_suffix="reduce_off",
 )
+add_example_test(
+    TestContactsExamples,
+    name="contacts.example_tipping_cube",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 360, "reduce-contacts": True},
+    use_viewer=True,
+    test_suffix="reduce_on",
+)
+add_example_test(
+    TestContactsExamples,
+    name="contacts.example_tipping_cube",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 360, "reduce-contacts": False},
+    use_viewer=True,
+    test_suffix="reduce_off",
+)
 
 
 class TestMultiphysicsExamples(unittest.TestCase):
