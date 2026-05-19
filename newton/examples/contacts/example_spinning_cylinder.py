@@ -305,10 +305,9 @@ class Example:
                 self.collision_pipeline.hydroelastic_sdf.get_contact_surface(),
             )
         self.viewer.log_scalar("sim_time [s]", self.sim_time)
-        self.viewer.log_scalar("t / t_stop", self.sim_time / self.t_stop)
         if self.omega_log:
-            self.viewer.log_scalar("omega_z [rad/s]", self.omega_log[-1])
-            self.viewer.log_scalar("omega_z / omega_0", self.omega_log[-1] / self.omega0)
+            self.viewer.log_scalar("face_contact_count", self.face_contact_count_log[-1])
+            self.viewer.log_scalar("rigid_contact_count", self.rigid_contact_count_log[-1])
         self.viewer.end_frame()
 
     def test_post_step(self):

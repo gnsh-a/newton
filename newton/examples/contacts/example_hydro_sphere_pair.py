@@ -256,12 +256,9 @@ class Example:
         if self.collision_pipeline.hydroelastic_sdf is not None:
             self.viewer.log_hydro_contact_surface(
                 self.collision_pipeline.hydroelastic_sdf.get_contact_surface(),
-        )
+            )
         self.viewer.log_scalar("sim_time [s]", self.sim_time)
         if self.z_log:
-            self.viewer.log_scalar("z_dropper [m]", self.z_log[-1])
-            self.viewer.log_scalar("vz_dropper [m/s]", self.vz_log[-1])
-            self.viewer.log_scalar("depth [m]", self.depth_log[-1])
             self.viewer.log_scalar("face_contact_count", self.face_contact_count_log[-1])
             self.viewer.log_scalar("rigid_contact_count", self.rigid_contact_count_log[-1])
         self.viewer.end_frame()

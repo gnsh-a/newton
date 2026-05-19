@@ -337,18 +337,11 @@ class Example:
         if self.collision_pipeline.hydroelastic_sdf is not None:
             self.viewer.log_hydro_contact_surface(
                 self.collision_pipeline.hydroelastic_sdf.get_contact_surface(),
-        )
+            )
         self.viewer.log_scalar("sim_time [s]", self.sim_time)
         if self.force_log:
-            self.viewer.log_scalar("F [N]", self.force_log[-1])
-            self.viewer.log_scalar("tilt [deg]", self.tilt_log[-1])
-            self.viewer.log_scalar("x_disp [mm]", self.x_log_mm[-1])
             self.viewer.log_scalar("face_contact_count", self.face_contact_count_log[-1])
             self.viewer.log_scalar("rigid_contact_count", self.rigid_contact_count_log[-1])
-        self.viewer.log_scalar("F_tip [N]", self.F_tip_analytic)
-        self.viewer.log_scalar("F_slide [N]", self.F_slide_analytic)
-        if self.event_force_N is not None:
-            self.viewer.log_scalar("event_force [N]", self.event_force_N)
         self.viewer.end_frame()
 
     def test_post_step(self):
