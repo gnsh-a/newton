@@ -2,14 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example Hydroelastic Sphere Pair
+# Example Hydroelastic Primitive Sphere Pair
 #
-# Minimal hydroelastic SDF sphere-pair demo with a reduce_contacts switch.
+# Minimal hydroelastic sphere-pair demo using primitive spheres. This replaces
+# the mesh icosphere version while keeping the same public example command.
 # The CSV trace exposes mode-dependent contact counts and dropper motion.
 #
 # Run modes:
-#     python -m newton.examples hydro_sphere_pair                       # reduce on (default)
-#     python -m newton.examples hydro_sphere_pair --no-reduce-contacts  # reduce off
+#     python -m newton.examples hydro_sphere_pair              # reduce on (default)
+#     python -m newton.examples hydro_sphere_pair_global_only  # reduce on, no pre-prune
+#     python -m newton.examples hydro_sphere_pair_no_reduce    # reduce off
 #
 # Command: python -m newton.examples hydro_sphere_pair
 #
@@ -18,7 +20,6 @@
 import os
 
 import numpy as np
-import trimesh
 import warp as wp
 
 import newton
@@ -26,20 +27,16 @@ import newton.examples
 from newton.geometry import HydroelasticSDF
 
 SPHERE_RADIUS = 0.05
-"""Radius of each icosphere [m]."""
+"""Radius of each primitive sphere [m]."""
 INITIAL_GAP = 0.0
 """Initial clear-air gap between the two spheres before loading [m]."""
-ICOSPHERE_SUBDIVISIONS = 3
-"""Icosphere refinement level (3 -> 1280 triangles)."""
 GRAVITY_Z = -2.0
 """Gentle gravity used to load the reduced sphere cap without leaving the SDF narrow band [m/s^2]."""
 
 SDF_MAX_RESOLUTION = 64
-"""Maximum SDF grid resolution along the longest mesh axis."""
+"""Maximum SDF grid resolution along the longest primitive axis."""
 SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
-"""SDF narrow-band range [m] used during baking."""
-SDF_MARGIN = 0.005
-"""Outward margin baked into the SDF surface [m]."""
+"""SDF narrow-band range [m] used during primitive SDF generation."""
 
 KH = 1.0e9
 """Hydroelastic stiffness coefficient [Pa].
@@ -64,23 +61,11 @@ OUTPUT_DIR = os.path.join("output", "hydro_sphere_pair")
 """Where CSV traces land, relative to the process cwd."""
 
 
-def _build_icosphere_mesh(radius, subdivisions, sdf_resolution, narrow_band_range, margin):
-    tm = trimesh.creation.icosphere(subdivisions=subdivisions, radius=radius)
-    vertices = np.asarray(tm.vertices, dtype=np.float32)
-    indices = np.asarray(tm.faces, dtype=np.int32).flatten()
-    mesh = newton.Mesh(vertices, indices)
-    mesh.build_sdf(
-        max_resolution=sdf_resolution,
-        narrow_band_range=narrow_band_range,
-        margin=margin,
-    )
-    return mesh
-
-
 class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
         self.reduce_contacts = bool(args.reduce_contacts)
+        self.pre_prune_contacts = bool(args.pre_prune_contacts)
         # Close batch runs after the experiment window ends.
         self.auto_close_after_freeze = bool(getattr(args, "test", False)) or bool(getattr(args, "headless", False))
         self._viewer_closed = False
@@ -94,14 +79,6 @@ class Example:
         # Long enough for the gentle contact load to settle.
         self.t_end = 1.2
 
-        mesh = _build_icosphere_mesh(
-            radius=SPHERE_RADIUS,
-            subdivisions=ICOSPHERE_SUBDIVISIONS,
-            sdf_resolution=SDF_MAX_RESOLUTION,
-            narrow_band_range=SDF_NARROW_BAND_RANGE,
-            margin=SDF_MARGIN,
-        )
-
         shape_cfg = newton.ModelBuilder.ShapeConfig(
             margin=0.0,
             gap=0.001,
@@ -111,18 +88,20 @@ class Example:
             density=SPHERE_DENSITY,
             is_hydroelastic=True,
             kh=KH,
+            sdf_max_resolution=SDF_MAX_RESOLUTION,
+            sdf_narrow_band_range=SDF_NARROW_BAND_RANGE,
         )
 
         builder = newton.ModelBuilder(gravity=GRAVITY_Z)
         builder.default_shape_cfg.gap = 0.001
 
-        builder.add_shape_mesh(
+        builder.add_shape_sphere(
             body=-1,
             xform=wp.transform(
                 wp.vec3(0.0, 0.0, SPHERE_RADIUS),
                 wp.quat_identity(),
             ),
-            mesh=mesh,
+            radius=SPHERE_RADIUS,
             cfg=shape_cfg,
             label="floor_sphere",
         )
@@ -135,9 +114,9 @@ class Example:
             ),
             label="dropper",
         )
-        builder.add_shape_mesh(
+        builder.add_shape_sphere(
             body=self.dropper_body,
-            mesh=mesh,
+            radius=SPHERE_RADIUS,
             cfg=shape_cfg,
             label="dropper_sphere",
         )
@@ -148,6 +127,7 @@ class Example:
         hydro_cfg = HydroelasticSDF.Config(
             output_contact_surface=True,
             reduce_contacts=self.reduce_contacts,
+            pre_prune_contacts=self.pre_prune_contacts,
             buffer_mult_iso=4,
             buffer_mult_contact=4,
         )
@@ -183,6 +163,11 @@ class Example:
         self.viewer.set_model(self.model)
         self.viewer.show_contacts = True
         self.viewer.show_hydro_contact_surface = True
+        self.viewer.show_collision = False
+        self.viewer.show_triangles = False
+        self.viewer.show_visual = True
+        if hasattr(self.viewer, "renderer"):
+            self.viewer.renderer.draw_wireframe = True
         self.viewer.set_camera(
             pos=wp.vec3(0.4, -0.4, 0.2),
             pitch=-15.0,
@@ -201,6 +186,13 @@ class Example:
         self._log_state()
 
         self.capture()
+
+    def _mode_suffix(self) -> str:
+        if not self.reduce_contacts:
+            return "reduce_off"
+        if not self.pre_prune_contacts:
+            return "global_only"
+        return "reduce_on"
 
     def _log_state(self) -> None:
         body_q = self.state_0.body_q.numpy()[self.dropper_body]
@@ -264,7 +256,7 @@ class Example:
         if self.collision_pipeline.hydroelastic_sdf is not None:
             self.viewer.log_hydro_contact_surface(
                 self.collision_pipeline.hydroelastic_sdf.get_contact_surface(),
-            )
+        )
         self.viewer.log_scalar("sim_time [s]", self.sim_time)
         if self.z_log:
             self.viewer.log_scalar("z_dropper [m]", self.z_log[-1])
@@ -283,7 +275,7 @@ class Example:
         self.max_face_contacts = max(self.max_face_contacts, raw)
 
     def test_final(self):
-        """Check that both contact modes generate stable, finite sphere-pair traces."""
+        """Check that both contact modes generate stable, finite primitive sphere-pair traces."""
         # Verify these checks when demo behavior changes.
         self._write_csv()
 
@@ -340,7 +332,7 @@ class Example:
             )
 
     def _write_csv(self) -> None:
-        suffix = "reduce_on" if self.reduce_contacts else "reduce_off"
+        suffix = self._mode_suffix()
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         path = os.path.join(OUTPUT_DIR, f"hydro_sphere_pair_{suffix}.csv")
         with open(path, "w") as f:
@@ -372,6 +364,12 @@ class Example:
                 "Newton's shipped examples). Use --no-reduce-contacts to keep all "
                 "marching-cubes face contacts."
             ),
+        )
+        parser.add_argument(
+            "--pre-prune-contacts",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="Enable local pre-prune before global hydroelastic reduction.",
         )
         return parser
 

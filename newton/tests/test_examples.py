@@ -754,6 +754,14 @@ add_example_test(
 )
 add_example_test(
     TestContactsExamples,
+    name="contacts.example_hydro_sphere_pair_global_only",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 160},
+    use_viewer=True,
+    test_suffix="global_only",
+)
+add_example_test(
+    TestContactsExamples,
     name="contacts.example_hydro_sphere_pair",
     devices=cuda_test_devices,
     test_options={"num-frames": 160, "reduce-contacts": False},
