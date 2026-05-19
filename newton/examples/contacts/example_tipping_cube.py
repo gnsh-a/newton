@@ -14,8 +14,9 @@
 # The demo records the first observed event and writes a CSV trace.
 #
 # Run modes:
-#     python -m newton.examples tipping_cube                       # reduce on (default)
-#     python -m newton.examples tipping_cube --no-reduce-contacts  # reduce off
+#     python -m newton.examples tipping_cube              # reduce on (default)
+#     python -m newton.examples tipping_cube_global_only  # reduce on, no pre-prune
+#     python -m newton.examples tipping_cube_no_reduce    # reduce off
 #
 # Command: python -m newton.examples tipping_cube
 #
@@ -82,6 +83,7 @@ class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
         self.reduce_contacts = bool(args.reduce_contacts)
+        self.pre_prune_contacts = bool(args.pre_prune_contacts)
         # Close batch runs after the experiment window ends.
         self.auto_close_after_freeze = bool(getattr(args, "test", False)) or bool(getattr(args, "headless", False))
         self._viewer_closed = False
@@ -160,6 +162,7 @@ class Example:
         hydro_cfg = HydroelasticSDF.Config(
             output_contact_surface=True,
             reduce_contacts=self.reduce_contacts,
+            pre_prune_contacts=self.pre_prune_contacts,
             buffer_mult_iso=4,
             buffer_mult_contact=4,
         )
@@ -200,6 +203,11 @@ class Example:
         self.viewer.set_model(self.model)
         self.viewer.show_contacts = True
         self.viewer.show_hydro_contact_surface = True
+        self.viewer.show_collision = False
+        self.viewer.show_triangles = False
+        self.viewer.show_visual = True
+        if hasattr(self.viewer, "renderer"):
+            self.viewer.renderer.draw_wireframe = True
         self.viewer.set_camera(
             pos=wp.vec3(0.25, -0.45, 0.18),
             pitch=-15.0,
@@ -225,6 +233,13 @@ class Example:
         self._log_state()
 
         self.capture()
+
+    def _mode_suffix(self) -> str:
+        if not self.reduce_contacts:
+            return "reduce_off"
+        if not self.pre_prune_contacts:
+            return "global_only"
+        return "reduce_on"
 
     def _apply_wrench(self) -> None:
         # Top-face force in +X; equivalent COM torque is +F * L / 2 about Y.
@@ -307,7 +322,7 @@ class Example:
             self.event_type = "tip" if tipped else "slide"
             self.event_force_N = F_now
             self.event_sim_time = self.sim_time
-            mode = "reduce_on" if self.reduce_contacts else "reduce_off"
+            mode = self._mode_suffix()
             print(
                 f"[{mode}] event={self.event_type} "
                 f"F={F_now:.3f} N (analytic F_tip={self.F_tip_analytic:.3f}, "
@@ -322,7 +337,7 @@ class Example:
         if self.collision_pipeline.hydroelastic_sdf is not None:
             self.viewer.log_hydro_contact_surface(
                 self.collision_pipeline.hydroelastic_sdf.get_contact_surface(),
-            )
+        )
         self.viewer.log_scalar("sim_time [s]", self.sim_time)
         if self.force_log:
             self.viewer.log_scalar("F [N]", self.force_log[-1])
@@ -368,7 +383,7 @@ class Example:
         self._write_csv()
 
     def _write_csv(self) -> None:
-        suffix = "reduce_on" if self.reduce_contacts else "reduce_off"
+        suffix = self._mode_suffix()
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         path = os.path.join(OUTPUT_DIR, f"tipping_cube_{suffix}.csv")
         with open(path, "w") as f:
@@ -400,6 +415,12 @@ class Example:
                 "Newton's shipped examples). Use --no-reduce-contacts to keep all "
                 "marching-cubes face contacts."
             ),
+        )
+        parser.add_argument(
+            "--pre-prune-contacts",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="Enable local pre-prune before global hydroelastic reduction.",
         )
         return parser
 
