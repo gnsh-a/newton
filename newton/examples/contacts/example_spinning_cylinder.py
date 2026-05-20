@@ -13,7 +13,6 @@
 #
 # Run modes:
 #     python -m newton.examples spinning_cylinder              # reduce on (default)
-#     python -m newton.examples spinning_cylinder_global_only  # reduce on, no pre-prune
 #     python -m newton.examples spinning_cylinder_no_reduce    # reduce off
 #
 # Command: python -m newton.examples spinning_cylinder
@@ -80,7 +79,7 @@ class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
         self.reduce_contacts = bool(args.reduce_contacts)
-        self.pre_prune_contacts = bool(args.pre_prune_contacts)
+        self.pre_prune_contacts = self.reduce_contacts
         # Close batch runs after the experiment window ends.
         self.auto_close_after_freeze = bool(getattr(args, "test", False)) or bool(getattr(args, "headless", False))
         self._viewer_closed = False
@@ -244,8 +243,6 @@ class Example:
     def _mode_suffix(self) -> str:
         if not self.reduce_contacts:
             return "reduce_off"
-        if not self.pre_prune_contacts:
-            return "global_only"
         return "reduce_on"
 
     def _log_state(self) -> None:
@@ -402,14 +399,8 @@ class Example:
             help=(
                 "Enable HydroelasticSDF.Config.reduce_contacts (default True, matching "
                 "Newton's shipped examples). Use --no-reduce-contacts to keep all "
-                "marching-cubes face contacts."
+                "marching-cubes face contacts and disable local pre-prune."
             ),
-        )
-        parser.add_argument(
-            "--pre-prune-contacts",
-            action=argparse.BooleanOptionalAction,
-            default=True,
-            help="Enable local pre-prune before global hydroelastic reduction.",
         )
         return parser
 

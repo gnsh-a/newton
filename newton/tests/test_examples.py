@@ -754,14 +754,6 @@ add_example_test(
 )
 add_example_test(
     TestContactsExamples,
-    name="contacts.example_hydro_sphere_pair_global_only",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 160},
-    use_viewer=True,
-    test_suffix="global_only",
-)
-add_example_test(
-    TestContactsExamples,
     name="contacts.example_hydro_sphere_pair",
     devices=cuda_test_devices,
     test_options={"num-frames": 160, "reduce-contacts": False},
@@ -775,14 +767,6 @@ add_example_test(
     test_options={"num-frames": 560, "reduce-contacts": True},
     use_viewer=True,
     test_suffix="reduce_on",
-)
-add_example_test(
-    TestContactsExamples,
-    name="contacts.example_spinning_cylinder_global_only",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 560},
-    use_viewer=True,
-    test_suffix="global_only",
 )
 add_example_test(
     TestContactsExamples,
@@ -802,14 +786,6 @@ add_example_test(
 )
 add_example_test(
     TestContactsExamples,
-    name="contacts.example_tipping_cube_global_only",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 360},
-    use_viewer=True,
-    test_suffix="global_only",
-)
-add_example_test(
-    TestContactsExamples,
     name="contacts.example_tipping_cube",
     devices=cuda_test_devices,
     test_options={"num-frames": 360, "reduce-contacts": False},
@@ -826,14 +802,6 @@ add_example_test(
 )
 add_example_test(
     TestContactsExamples,
-    name="contacts.example_sliding_ridged_cube_global_only",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 120},
-    use_viewer=True,
-    test_suffix="global_only",
-)
-add_example_test(
-    TestContactsExamples,
     name="contacts.example_sliding_ridged_cube_no_reduce",
     devices=cuda_test_devices,
     test_options={"num-frames": 120},
@@ -847,14 +815,6 @@ add_example_test(
     test_options={"num-frames": 160},
     use_viewer=True,
     test_suffix="reduce_on",
-)
-add_example_test(
-    TestContactsExamples,
-    name="contacts.example_sliding_single_rib_cube_global_only",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 160},
-    use_viewer=True,
-    test_suffix="global_only",
 )
 add_example_test(
     TestContactsExamples,

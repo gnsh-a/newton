@@ -8,7 +8,6 @@
 #
 # Run modes:
 #     python -m newton.examples sliding_single_rib_cube              # reduce on
-#     python -m newton.examples sliding_single_rib_cube_global_only  # reduce on, no pre-prune
 #     python -m newton.examples sliding_single_rib_cube_no_reduce    # reduce off
 #
 # Command: python -m newton.examples sliding_single_rib_cube
@@ -139,7 +138,7 @@ class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
         self.reduce_contacts = bool(args.reduce_contacts)
-        self.pre_prune_contacts = bool(args.pre_prune_contacts)
+        self.pre_prune_contacts = self.reduce_contacts
         self.auto_close_after_freeze = bool(getattr(args, "test", False)) or bool(getattr(args, "headless", False))
         self._viewer_closed = False
 
@@ -283,8 +282,6 @@ class Example:
     def _mode_suffix(self) -> str:
         if not self.reduce_contacts:
             return "reduce_off"
-        if not self.pre_prune_contacts:
-            return "global_only"
         return "reduce_on"
 
     def _compute_pose_and_velocity(self) -> tuple[float, float, float, float, float, float, float]:
@@ -481,13 +478,7 @@ class Example:
             "--reduce-contacts",
             action=argparse.BooleanOptionalAction,
             default=True,
-            help="Enable hydroelastic contact reduction.",
-        )
-        parser.add_argument(
-            "--pre-prune-contacts",
-            action=argparse.BooleanOptionalAction,
-            default=True,
-            help="Enable local pre-prune before global hydroelastic reduction.",
+            help="Enable hydroelastic contact reduction and local pre-prune.",
         )
         return parser
 
