@@ -794,6 +794,38 @@ add_example_test(
 )
 add_example_test(
     TestContactsExamples,
+    name="contacts.example_cube_on_plate",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 260, "reduce-contacts": True},
+    use_viewer=True,
+    test_suffix="reduce_on",
+)
+add_example_test(
+    TestContactsExamples,
+    name="contacts.example_cube_on_plate",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 260, "reduce-contacts": False},
+    use_viewer=True,
+    test_suffix="reduce_off",
+)
+add_example_test(
+    TestContactsExamples,
+    name="contacts.example_cube_on_plate_settle",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 260, "reduce-contacts": True},
+    use_viewer=True,
+    test_suffix="reduce_on",
+)
+add_example_test(
+    TestContactsExamples,
+    name="contacts.example_cube_on_plate_settle",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 260, "reduce-contacts": False},
+    use_viewer=True,
+    test_suffix="reduce_off",
+)
+add_example_test(
+    TestContactsExamples,
     name="contacts.example_sliding_ridged_cube",
     devices=cuda_test_devices,
     test_options={"num-frames": 120},
