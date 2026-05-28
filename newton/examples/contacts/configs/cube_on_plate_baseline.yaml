@@ -1,0 +1,25 @@
+# Baseline config for cube_on_plate. Copy this file and tweak values as
+# needed. Unknown constants/newton keys raise. Scenario, reduce_contacts, and
+# other behavioral flags are CLI args, not config keys.
+#
+# constants: shared scene/scenario values used by both Newton and Drake demos.
+# newton: Newton-specific hydroelastic material parameters.
+# drake: Drake-specific hydroelastic material parameters; ignored by Newton.
+
+constants:
+  CUBE_HALF_EXTENT: 0.05
+  CUBE_DENSITY: 800.0
+  PLATE_HALF_EXTENT: 0.25
+  PLATE_HALF_THICKNESS: 0.2
+  MU_SLIDING: 0.5
+  SDF_MAX_RESOLUTION: 32
+  SDF_NARROW_BAND_RANGE: [-0.005, 0.005]
+  RAMP_RATE_N_PER_S: 5.0
+  TIP_INITIAL_OVERLAP: 0.0002
+  SETTLE_DROP_HEIGHT: 0.001
+
+newton:
+  KH: 1000000000.0
+
+drake:
+  KH: 1000000.0

@@ -7,34 +7,39 @@
 # One demo, two scenarios over the same hydroelastic cube + plate scene:
 #
 #   --scenario tip     (default)
-#       Cube starts pre-penetrated by 0.2 mm and a horizontal force is
-#       applied at the top face, ramped at RAMP_RATE N/s. Past F = m·g/2
-#       (≈ 3.93 N at μ = 0.7) the cube tips analytically; past F = μ·m·g
-#       it would slide. The demo probes rotation under quasi-static torque.
+#       Cube starts pre-penetrated by TIP_INITIAL_OVERLAP and a horizontal
+#       force is applied at the top face, ramped at RAMP_RATE_N_PER_S N/s.
+#       Past F = m·g/2 the cube tips analytically; past F = μ·m·g it would
+#       slide. The demo probes rotation under quasi-static torque.
 #
 #   --scenario settle
-#       Cube starts 1 mm above the plate and falls under gravity only.
-#       The demo probes translation under impact and the resulting
-#       steady-state penetration δ_eq = m·g / (k_eff · L²).
+#       Cube starts SETTLE_DROP_HEIGHT above the plate and falls under
+#       gravity only. The demo probes translation under impact and the
+#       resulting steady-state penetration δ_eq = m·g / (k_eff · L²).
 #
-# Both scenarios share the same scene, solver, time stepping, and run
-# duration (RUN_SECONDS = 1.0 s). The demo carries no per-step logging;
-# instrumentation is left to an external sweep driver.
+# Scene and physics constants are loaded from a YAML config. The bundled
+# ``configs/cube_on_plate_baseline.yaml`` is used by default. The top-level
+# ``constants`` mapping is shared with the Drake demo; the top-level
+# ``newton`` mapping contains Newton-specific parameters. A ``drake`` mapping
+# may be present so the same file can be passed to both demos, but this
+# example ignores it.
 #
 # Run modes:
-#     python -m newton.examples cube_on_plate                  # tip, reduce on
-#     python -m newton.examples cube_on_plate --no-reduce-contacts
-#     python -m newton.examples cube_on_plate_settle           # settle, reduce on
-#     python -m newton.examples cube_on_plate_settle --no-reduce-contacts
+#     python -m newton.examples cube_on_plate
+#     python -m newton.examples cube_on_plate --simulation-time 2.0
+#     python -m newton.examples cube_on_plate --scenario settle --config ...
+#     python -m newton.examples cube_on_plate --no-reduce-contacts --config ...
 #
 # Command: python -m newton.examples cube_on_plate
 #
 ###########################################################################
 
 import math
+from pathlib import Path
 
 import numpy as np
 import warp as wp
+import yaml
 
 import newton
 import newton.examples
@@ -42,42 +47,28 @@ from newton.geometry import HydroelasticSDF
 
 SCENARIO_TIP = "tip"
 SCENARIO_SETTLE = "settle"
-
-CUBE_HALF_EXTENT = 0.05
-"""Cube half-extent [m]. Side length L = 2·CUBE_HALF_EXTENT = 0.10 m."""
-CUBE_DENSITY = 800.0
-"""Cube density [kg/m³]. With L = 0.10 m gives m = rho·L³ = 0.8 kg, m·g ≈ 7.85 N."""
-
-PLATE_HALF_EXTENT = 0.25
-"""Plate half-extent in X and Y [m]."""
-PLATE_HALF_THICKNESS = 0.01
-"""Plate half-thickness in Z [m]."""
-
-MU_SLIDING = 0.7
-"""Sliding friction coefficient. Picked > 1/2 so tipping wins analytically
-(F_tip = m·g/2 ≈ 3.93 N before F_slide = μ·m·g ≈ 5.50 N)."""
-KH = 1.0e9
-"""Hydroelastic contact stiffness coefficient."""
-
-SDF_MAX_RESOLUTION = 32
-"""Maximum SDF grid resolution along the longest axis."""
-SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
-"""SDF narrow-band range [m]."""
-
-RAMP_RATE_N_PER_S = 10.0
-"""Linear ramp rate for the applied horizontal force [N/s]. Tip-scenario only.
-Reaches 2·m·g ≈ 15 N in 1.5 s — comfortably past both analytic thresholds."""
-
-TIP_INITIAL_OVERLAP = 2.0e-4
-"""Tip scenario: cube starts 0.2 mm pre-penetrated so the SDF narrow band is
-engaged at t = 0 and there is no launch-from-rest impulse."""
-SETTLE_DROP_HEIGHT = 1.0e-3
-"""Settle scenario: cube bottom starts 1 mm above the plate top."""
-
+DEFAULT_CONFIG_PATH = Path(__file__).parent / "configs" / "cube_on_plate_baseline.yaml"
+FRAME_FPS = 240
+FRAME_COUNT_MARGIN = 20
 RUN_SECONDS = 1.0
-"""Hard cap on sim_time [s] for both scenarios. Tip: long enough that
-ramped F = 10 N >> F_tip. Settle: long enough that the ~25 ms damped
-response has fully decayed."""
+"""Default hard cap on sim_time [s] for both scenarios."""
+
+# Scene and physics constants must be supplied by the YAML config
+# (``--config``). They are set as module globals by ``_apply_config`` before
+# ``Example.__init__`` reads them.
+REQUIRED_CONSTANTS = (
+    "CUBE_HALF_EXTENT",
+    "CUBE_DENSITY",
+    "PLATE_HALF_EXTENT",
+    "PLATE_HALF_THICKNESS",
+    "MU_SLIDING",
+    "SDF_MAX_RESOLUTION",
+    "SDF_NARROW_BAND_RANGE",
+    "RAMP_RATE_N_PER_S",
+    "TIP_INITIAL_OVERLAP",
+    "SETTLE_DROP_HEIGHT",
+)
+REQUIRED_NEWTON = ("KH",)
 
 RIGID_CONTACT_MAX = 16384
 """Upper bound on rigid contacts allocated by the collision pipeline."""
@@ -90,29 +81,88 @@ GRAVITY = 9.81
 """Acceleration of gravity used for analytic predictions [m/s²]."""
 
 TIP_FINAL_TILT_DEG = 30.0
-"""Settle test: cube must have tipped past this angle by RUN_SECONDS."""
+"""Tip test: cube must have tipped past this angle by RUN_SECONDS."""
 SETTLE_FINAL_TILT_DEG = 0.5
 """Settle test: cube tilt must be below this at RUN_SECONDS."""
 SETTLE_FINAL_DRIFT_M = 1.0e-4
 """Settle test: cube lateral drift |x|, |y| must be below this at RUN_SECONDS."""
 
 
+def _load_config(config_path: str | Path) -> tuple[dict[str, object], dict[str, object]]:
+    path = Path(config_path).resolve()
+    with open(path, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    if not isinstance(cfg, dict):
+        raise TypeError(f"config {path} must be a YAML mapping")
+    constants = cfg.get("constants", {})
+    if not isinstance(constants, dict):
+        raise TypeError(f"config {path} constants must be a mapping")
+    newton_constants = cfg.get("newton", {})
+    if not isinstance(newton_constants, dict):
+        raise TypeError(f"config {path} newton must be a mapping")
+
+    required = set(REQUIRED_CONSTANTS)
+    missing = required - set(constants)
+    if missing:
+        raise KeyError(f"config {path} is missing required constants keys: {sorted(missing)}")
+    unknown = set(constants) - required
+    if unknown:
+        raise KeyError(
+            f"config {path} has unknown constants keys: {sorted(unknown)}; expected one of {sorted(required)}."
+        )
+
+    required_newton = set(REQUIRED_NEWTON)
+    missing_newton = required_newton - set(newton_constants)
+    if missing_newton:
+        raise KeyError(f"config {path} is missing required newton keys: {sorted(missing_newton)}")
+    unknown_newton = set(newton_constants) - required_newton
+    if unknown_newton:
+        raise KeyError(
+            f"config {path} has unknown newton keys: {sorted(unknown_newton)}; "
+            f"expected one of {sorted(required_newton)}."
+        )
+    return constants, newton_constants
+
+
+def _apply_config(config_path: str | Path) -> None:
+    """Load a YAML config and bind its ``constants`` mapping to this module.
+
+    Every name in ``REQUIRED_CONSTANTS`` must appear in ``constants`` and
+    every name in ``REQUIRED_NEWTON`` must appear in ``newton``; missing keys
+    raise. Unknown keys raise. There are no source-level defaults - the YAML
+    is the sole source of truth for the listed names.
+    """
+    constants, newton_constants = _load_config(config_path)
+    for key, value in constants.items():
+        globals()[key] = tuple(value) if isinstance(value, list) else value
+    for key, value in newton_constants.items():
+        globals()[key] = tuple(value) if isinstance(value, list) else value
+
+
 class Example:
     def __init__(self, viewer, args):
+        _apply_config(args.config)
+
         self.viewer = viewer
         self.scenario = str(args.scenario)
         if self.scenario not in (SCENARIO_TIP, SCENARIO_SETTLE):
             raise ValueError(f"unknown scenario: {self.scenario!r}")
+        self.run_seconds = float(args.simulation_time)
+        if self.run_seconds <= 0.0:
+            raise ValueError(f"simulation_time must be positive; got {self.run_seconds}")
         self.reduce_contacts = bool(args.reduce_contacts)
         self.pre_prune_contacts = self.reduce_contacts
         self.auto_close_after_freeze = bool(getattr(args, "test", False)) or bool(getattr(args, "headless", False))
         self._viewer_closed = False
 
-        self.fps = 240
+        self.fps = FRAME_FPS
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = 8
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
+        if hasattr(self.viewer, "num_frames"):
+            min_frames = math.ceil(self.run_seconds * self.fps) + FRAME_COUNT_MARGIN
+            self.viewer.num_frames = max(int(self.viewer.num_frames), min_frames)
 
         L = 2.0 * CUBE_HALF_EXTENT
         mass = CUBE_DENSITY * L * L * L
@@ -266,7 +316,7 @@ class Example:
         self.collision_pipeline.collide(self.state_0, self.contacts)
 
     def step(self):
-        if self.sim_time > RUN_SECONDS:
+        if self.sim_time > self.run_seconds:
             if self.auto_close_after_freeze and not self._viewer_closed:
                 self.viewer.close()
                 self._viewer_closed = True
@@ -324,7 +374,7 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
-        parser.set_defaults(num_frames=int(RUN_SECONDS * 240) + 20)
+        parser.set_defaults(num_frames=math.ceil(RUN_SECONDS * FRAME_FPS) + FRAME_COUNT_MARGIN)
         import argparse  # noqa: PLC0415
 
         parser.add_argument(
@@ -334,8 +384,7 @@ class Example:
             help=(
                 "Which physical scenario to run. 'tip': ramped horizontal force at the "
                 "top face, cube starts pre-penetrated. 'settle': no applied force, cube "
-                "starts 1 mm above the plate and falls under gravity. Both scenarios "
-                "share the same scene, solver, and run for RUN_SECONDS = 1.0 s."
+                "starts above the plate and falls under gravity."
             ),
         )
         parser.add_argument(
@@ -347,6 +396,18 @@ class Example:
                 "--no-reduce-contacts to keep all marching-cubes face contacts and "
                 "disable local pre-prune."
             ),
+        )
+        parser.add_argument(
+            "--config",
+            type=str,
+            default=str(DEFAULT_CONFIG_PATH),
+            help="Path to a YAML config supplying every scene and physics constant. Defaults to the bundled baseline.",
+        )
+        parser.add_argument(
+            "--simulation-time",
+            type=float,
+            default=RUN_SECONDS,
+            help="Simulated duration in seconds before physics freezes.",
         )
         return parser
 
