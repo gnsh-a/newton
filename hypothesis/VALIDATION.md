@@ -24,7 +24,7 @@ the rigid limit.
 |---|---|---|---|
 | H1 settle | Rigid static equilibrium: rest at N=mg, drift=tilt=0 | Optional (transient only) | Support = mg; drift ~ 0, tilt ~ 0 |
 | H2 slide | Rigid Coulomb (= Farkas eps->inf, F=1): t=v0/(mu*g), d=v0^2/(2*mu*g) | No | Stop time and travel; gate: solref time const << t_stop |
-| H3 tip | Rigid onset F_tip=m*g/2, F_slide=mu*m*g; rigid edge-pivot | Pre-tip only: Winkler K_theta=k_eff*I | Tip force, tip-before-slide (mu>0.5); pre-tip pitch(F), cop_x(F) valid for e<L/6 |
+| H3 tip | Rigid onset F_tip=m*g/2, F_slide=mu*m*g; rigid edge-pivot; rigid COP shift cop_x/half_extent=F/F_tip | Pre-tip pitch only: Winkler K_theta=k_eff*I | Tip force, tip-before-slide (mu>0.5); COP tracks F/F_tip to the front edge; pre-tip pitch valid for e<L/6 |
 | H4 spin | Farkas eps=0 endpoint: T(0)=2/3 => Tz=(2/3)*mu*m*g*R, t=(3/4)*w0*R/(mu*g), w linear | No | Tz, t_stop, linear w-decay; gate: drift ~ 0 (eps=0 unstable) |
 | H5 slide+spin | Farkas curve F(eps), T(eps) (elliptic); attractor eps0 ~ 0.653 | No | Pointwise \|F\|/(mu*m*g) vs F(eps), \|T\|/(mu*m*g*R) vs T(eps); eps->0.653; simultaneous stop; gate: uniform pressure (cylinder drift) |
 | H6 impact | Rigid gives only impulse J=m*v*(1+e), v_reb=e*v_imp | Required: damped SDOF | Peak F, depth_max, ring-down, settle; 3 stiffness levels + dt-floor gate; e = lower bound |
@@ -33,28 +33,29 @@ the rigid limit.
 
 ### Farkas sliding-spinning disk (H4, H5)
 
-Friction force `F = -mu*m*g * F(eps) * e_v` and torque `T = -mu*m*g*R * T(eps) * e_w`,
-with `eps = v/(R*w)`. `K`, `E` are the complete elliptic integrals of the first and
-second kind (check whether your library takes the modulus `k` or the parameter
-`m = k^2`; the source paper uses the modulus convention).
+Friction force `F = -mu*Fn * F(eps) * e_v` and yaw torque `T = -mu*Fn*R * T(eps) * e_w`,
+with `eps = v/(R*w)` and `Fn` the normal load. `F(eps)`, `T(eps)` are the dimensionless
+force and torque factors for a uniform-pressure disk. Evaluate them by integrating the
+Coulomb traction direction over the unit disk (paper Eq. 1) -- this is unambiguous and
+matches the paper's Fig. 2:
 
 ```
-F(eps):
-  eps <= 1: (4/3) * [(eps^2+1)*E(eps)   - (eps^2-1)*K(eps)]   / (eps*pi)
-  eps >= 1: (4/3) * [(eps^2+1)*E(1/eps) - (eps^2-1)*K(1/eps)] / pi
-  ends: F(0)=0, F(inf)=1, F(1)=8/(3*pi)
+u(x, y) = (eps - y, x)             # local slip direction; e_v = x_hat, spin about +z
+F(eps) = (1/pi) * integral_unit_disk (eps - y)        / |u| dA
+T(eps) = (1/pi) * integral_unit_disk (x^2 + y^2 - eps*y) / |u| dA
 
-T(eps):
-  eps <= 1: (4/9) * [(4-2*eps^2)*E(eps)   + (eps^2-1)*K(eps)]              / pi
-  eps >= 1: (4/9) * [(4-2*eps^2)*E(1/eps) + (2*eps^2-5+3/eps^2)*K(1/eps)] / (eps*pi)
-  ends: T(0)=2/3, T(inf)=0, T(1)=8/(9*pi)
+verified anchors: F(0)=0, F(1)=8/(3*pi)~=0.849, F(inf)=1
+                  T(0)=2/3, T(1)=8/(9*pi)~=0.283, T(inf)=0
 
-Equations of motion:
-  m * dv/dt      = -mu*m*g   * F(eps)
-  (1/2)*m*R^2 * dw/dt = -mu*m*g*R * T(eps)
-
-Stable attractor eps0 ~ 0.653; v and w reach zero at the same moment.
+equations of motion:  m*dv/dt = -mu*Fn*F(eps);  (1/2)*m*R^2*dw/dt = -mu*Fn*R*T(eps)
 ```
+
+NOTE: the paper also prints an elliptic-integral closed form, but the literal expression
+does not reproduce these limits under the standard `K(k)`/`E(k)` convention (`F` would
+diverge as `eps->0` instead of going to 0). Use the direct integral above.
+
+The ratio is friction- and load-independent: `|T|/(R*|F|) = T(eps)/F(eps)` -- this is the
+H5 pointwise check. Stable attractor `eps0 ~ 0.653`; sliding and spinning stop together.
 
 - **H4** is the pure-spin endpoint (`eps = 0`): `F(0)=0` (no induced translation),
   `T(0)=2/3` => `Tz = (2/3)*mu*m*g*R`. The elliptic curves are not needed; only the
@@ -66,15 +67,29 @@ Stable attractor eps0 ~ 0.653; v and w reach zero at the same moment.
   along the whole run (no time integration needed for this test), in addition to the
   terminal `eps*` and simultaneous-stop checks.
 
-### Winkler torsional spring (H3 pre-tip)
+### Rigid center-of-pressure shift (H3, rigid statics)
 
-A rigid flat patch on a Winkler foundation of modulus `k_a` [Pa/m = N/m^3] tilted by
-small angle `theta` about its centroidal axis:
+Before tipping the cube is in static equilibrium, so the physical center of pressure
+(the normal-force offset) grows linearly with the applied force and reaches the front
+edge exactly at the tip force:
+
+```
+cop_x / half_extent = F / F_tip
+```
+
+This is rigid statics, not a compliance effect. Compute it from the solver wrench with
+the base friction torque removed: `cop_x = -(Ty + h*Fx) / Fz`. The raw `-Ty/Fz` folds in
+the friction torque and reads only half the true offset.
+
+### Winkler torsional spring (H3 pre-tip pitch)
+
+A rigid cube has zero pre-tip pitch; the small pre-tip tilt is a compliance effect. A
+rigid flat patch on a Winkler foundation of modulus `k_a` [Pa/m = N/m^3] tilted by small
+angle `theta` about its centroidal axis:
 
 ```
 M = k_a * I_area * theta,   I_area = integral(x^2 dA)   (square side L: I = L^4/12)
 K_theta = k_a * I_area,   with k_a = k_eff (effective hydroelastic gradient)
-cop_x = -Ty / Fz
 ```
 
 Valid only in the small-angle, full-contact (no-uplift) regime, i.e. eccentricity

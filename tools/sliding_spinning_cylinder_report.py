@@ -11,6 +11,7 @@ using the shared report framework in :mod:`_report_common`.
 from __future__ import annotations
 
 import argparse
+import math
 import shutil
 import sys
 from pathlib import Path
@@ -29,6 +30,8 @@ SUMMARY_CSV = "sliding_spinning_summary.csv"
 PAGE_TITLE = "H5: Sliding-Spinning Cylinder Contact Reduction"
 SPEED_COLOR = "#0891b2"
 SPIN_COLOR = "#7c3aed"
+GRAVITY = 9.81
+"""Gravitational acceleration [m/s^2]; matches the demo's GRAVITY."""
 
 
 def load_timeseries(csv_dir: str | Path) -> dict[float, dict[str, list[dict[str, str]]]]:
@@ -77,26 +80,23 @@ def select_epsilon(runs: dict[float, dict[str, list[dict[str, str]]]], requested
 
 def _figure_state_history(
     runs: dict[float, dict[str, list[dict[str, str]]]],
-    summaries: dict[float, dict[str, dict[str, str]]],
     *,
     selected_epsilon: float,
 ) -> str:
     rows_by_mode = runs[selected_epsilon]
-    reference_row = summaries[selected_epsilon].get("unreduced") or next(iter(summaries[selected_epsilon].values()))
-    epsilon_reference = rc.as_float(reference_row, "epsilon_reference")
-    times: list[float] = []
-    for mode in rc.MODES:
-        rows = rows_by_mode.get(mode)
-        if rows:
-            times = [rc.as_float(row, "time_s") for row in rows]
-            break
 
-    epsilon_series = [
-        rc.Series(times, [epsilon_reference for _ in times], "reference epsilon", rc.REFERENCE_COLOR, dash="5 4")
-    ]
-    epsilon_series.extend(rc.mode_series(rows_by_mode, x_key="time_s", y_key="epsilon"))
+    epsilon_series = list(rc.mode_series(rows_by_mode, x_key="time_s", y_key="epsilon"))
     speed_series = rc.mode_series(rows_by_mode, x_key="time_s", y_key="horizontal_speed_m_per_s")
     omega_series = rc.mode_series(rows_by_mode, x_key="time_s", y_key="cylinder_omega_z_rad_per_s")
+
+    reference_rows = rows_by_mode.get("unreduced")
+    if reference_rows is None:
+        reference_rows = next((rows for rows in (rows_by_mode.get(m) for m in rc.MODES) if rows), [])
+    traj_t, traj_v, traj_w, traj_e = _farkas_state_trajectory(reference_rows)
+    if traj_t:
+        epsilon_series.append(rc.Series(traj_t, traj_e, "Farkas analytic", rc.REFERENCE_COLOR, dash="2 3"))
+        speed_series.append(rc.Series(traj_t, traj_v, "Farkas analytic", rc.REFERENCE_COLOR, dash="2 3"))
+        omega_series.append(rc.Series(traj_t, traj_w, "Farkas analytic", rc.REFERENCE_COLOR, dash="2 3"))
 
     all_times = [x for series in epsilon_series for x in series.xs]
     return rc.figure_grid(
@@ -109,7 +109,6 @@ def _figure_state_history(
                 x_range=rc.padded_range(all_times, include=(0.0,), floor_span=0.05),
                 y_range=rc.padded_range(
                     [y for series in epsilon_series for y in series.ys],
-                    include=(epsilon_reference,),
                     floor_span=0.2,
                 ),
             ),
@@ -178,6 +177,186 @@ def _figure_solver_history(
                     include=(0.0,),
                     floor_span=50.0,
                 ),
+            ),
+        ]
+    )
+
+
+def _farkas_factors(eps: float, *, n_r: int = 40, n_theta: int = 80) -> tuple[float, float]:
+    """Farkas force F(eps) and torque T(eps) factors for a uniform-pressure disk.
+
+    Computed by directly integrating the paper's Eq. (1) over the unit disk (the
+    Coulomb traction direction -u/|u|, u = eps*e_v + e_w x r), rather than the
+    elliptic-integral closed form. Limits: F(0)=0, F(inf)=1, T(0)=2/3, T(inf)=0.
+    """
+    f_acc = 0.0
+    t_acc = 0.0
+    for i in range(n_r):
+        rho = (i + 0.5) / n_r
+        for j in range(n_theta):
+            theta = 2.0 * math.pi * (j + 0.5) / n_theta
+            x = rho * math.cos(theta)
+            y = rho * math.sin(theta)
+            ux = eps - y
+            uy = x
+            speed = math.hypot(ux, uy)
+            if speed < 1.0e-12:
+                continue
+            f_acc += (ux / speed) * rho
+            t_acc += ((x * x + y * y - eps * y) / speed) * rho
+    cell = (1.0 / n_r) * (2.0 * math.pi / n_theta) / math.pi
+    return f_acc * cell, t_acc * cell
+
+
+def _farkas_table(eps_max: float = 3.0, n: int = 140) -> tuple[list[float], list[float], list[float]]:
+    """Tabulate F(eps), T(eps) on a uniform grid for fast lookup during integration."""
+    grid = [eps_max * i / (n - 1) for i in range(n)]
+    f_vals: list[float] = []
+    t_vals: list[float] = []
+    for e in grid:
+        f_fac, t_fac = _farkas_factors(e)
+        f_vals.append(f_fac)
+        t_vals.append(t_fac)
+    return grid, f_vals, t_vals
+
+
+def _table_lookup(eps: float, grid: list[float], vals: list[float]) -> float:
+    eps_max = grid[-1]
+    if eps <= 0.0:
+        return vals[0]
+    if eps >= eps_max:
+        return vals[-1]
+    step = eps_max / (len(grid) - 1)
+    j = int(eps / step)
+    if j >= len(grid) - 1:
+        return vals[-1]
+    return vals[j] + (eps - grid[j]) / step * (vals[j + 1] - vals[j])
+
+
+def _estimate_mu(rows: list[dict[str, str]]) -> float:
+    """Recover the Coulomb mu from logged data: mu = |F_horiz| / (|Fz| * F(eps))."""
+    samples = []
+    for row in rows:
+        eps = rc.as_float(row, "epsilon")
+        fz = abs(rc.as_float(row, "solver_fz_N"))
+        f_horiz = math.hypot(rc.as_float(row, "solver_fx_N"), rc.as_float(row, "solver_fy_N"))
+        if not math.isfinite(eps) or eps <= 0.0 or eps > 3.0 or fz < 1.0e-3 or f_horiz < 1.0e-3:
+            continue
+        f_fac, _ = _farkas_factors(eps)
+        if f_fac > 1.0e-3:
+            samples.append(f_horiz / (fz * f_fac))
+    if not samples:
+        return float("nan")
+    samples.sort()
+    return samples[len(samples) // 2]
+
+
+def _farkas_state_trajectory(
+    rows: list[dict[str, str]],
+) -> tuple[list[float], list[float], list[float], list[float]]:
+    """Integrate the Farkas ODEs (RK4) from the run's initial state.
+
+    Constants come from the data -- radius R = spin_edge_speed/omega_abs, mu recovered
+    from the friction ratio -- plus gravity. Returns (t, v, omega_z, epsilon).
+    """
+    if not rows:
+        return [], [], [], []
+    v = abs(rc.as_float(rows[0], "horizontal_speed_m_per_s"))
+    omega0 = rc.as_float(rows[0], "cylinder_omega_z_rad_per_s")
+    w = abs(omega0)
+    omega_sign = 1.0 if omega0 >= 0.0 else -1.0
+    radii = []
+    for row in rows:
+        om = abs(rc.as_float(row, "omega_abs_rad_per_s"))
+        edge = rc.as_float(row, "spin_edge_speed_m_per_s")
+        if om > 0.5 and edge > 0.0:
+            radii.append(edge / om)
+    mu = _estimate_mu(rows)
+    t_end = rc.as_float(rows[-1], "time_s")
+    if not radii or not math.isfinite(mu) or mu <= 0.0 or w <= 0.0 or t_end <= 0.0:
+        return [], [], [], []
+    radii.sort()
+    radius = radii[len(radii) // 2]
+    accel = mu * GRAVITY
+    grid, f_grid, t_grid = _farkas_table()
+
+    def deriv(vv: float, ww: float) -> tuple[float, float]:
+        if vv <= 1.0e-9 and ww <= 1.0e-9:
+            return 0.0, 0.0
+        eps = vv / (radius * ww) if ww > 1.0e-9 else 3.0
+        return -accel * _table_lookup(eps, grid, f_grid), -(2.0 * accel / radius) * _table_lookup(eps, grid, t_grid)
+
+    n = 400
+    dt = t_end / n
+    v_init, w_init = v, w
+    ts, vs, ws, es = [], [], [], []
+    t = 0.0
+    for _ in range(n + 1):
+        ts.append(t)
+        vs.append(v)
+        ws.append(omega_sign * w)
+        # eps = v/(R*w) is 0/0 near the simultaneous stop; mask the noisy tail.
+        es.append(v / (radius * w) if (v > 0.03 * v_init and w > 0.03 * w_init) else float("nan"))
+        k1v, k1w = deriv(v, w)
+        k2v, k2w = deriv(v + 0.5 * dt * k1v, w + 0.5 * dt * k1w)
+        k3v, k3w = deriv(v + 0.5 * dt * k2v, w + 0.5 * dt * k2w)
+        k4v, k4w = deriv(v + dt * k3v, w + dt * k3w)
+        v = max(v + dt / 6.0 * (k1v + 2.0 * k2v + 2.0 * k3v + k4v), 0.0)
+        w = max(w + dt / 6.0 * (k1w + 2.0 * k2w + 2.0 * k3w + k4w), 0.0)
+        t += dt
+    return ts, vs, ws, es
+
+
+def _figure_coupling(runs: dict[float, dict[str, list[dict[str, str]]]]) -> str:
+    """Pointwise Farkas check: measured torque/force lever ratio vs T(eps)/F(eps).
+
+    The radius is recovered from logged data (R = spin_edge_speed / omega_abs), and
+    the mu*Fn factor cancels in the ratio, so no friction coefficient, mass, or
+    geometry constant is hard-coded here.
+    """
+    coupling_series: list[rc.Series] = []
+    eps_all: list[float] = []
+    for mode in rc.MODES:
+        xs: list[float] = []
+        ys: list[float] = []
+        for epsilon0 in sorted(runs):
+            for row in runs[epsilon0].get(mode, []):
+                eps = rc.as_float(row, "epsilon")
+                omega_abs = rc.as_float(row, "omega_abs_rad_per_s")
+                edge = rc.as_float(row, "spin_edge_speed_m_per_s")
+                f_horiz = math.hypot(rc.as_float(row, "solver_fx_N"), rc.as_float(row, "solver_fy_N"))
+                tz = abs(rc.as_float(row, "solver_tz_Nm"))
+                if not math.isfinite(eps) or eps <= 0.0 or eps > 3.0:
+                    continue
+                if omega_abs < 0.5 or edge <= 0.0 or f_horiz < 1.0e-3:
+                    continue
+                radius = edge / omega_abs
+                xs.append(eps)
+                ys.append(tz / (radius * f_horiz))
+                eps_all.append(eps)
+        if xs:
+            coupling_series.append(
+                rc.Series(xs, ys, rc.MODE_LABELS[mode], rc.MODE_COLORS[mode], draw_line=False, draw_marker=True)
+            )
+
+    lo = min(eps_all) if eps_all else 0.2
+    hi = max(eps_all) if eps_all else 2.0
+    curve_eps = [lo + (hi - lo) * i / 59.0 for i in range(60)]
+    ref_ys = []
+    for e in curve_eps:
+        f_fac, t_fac = _farkas_factors(e)
+        ref_ys.append(t_fac / f_fac if f_fac > 1.0e-9 else float("nan"))
+    reference = rc.Series(curve_eps, ref_ys, "Farkas T(eps)/F(eps)", rc.REFERENCE_COLOR, dash="5 4")
+    all_y = [y for series in [reference, *coupling_series] for y in series.ys]
+    return rc.figure_grid(
+        [
+            rc.Figure(
+                title="Force-torque coupling vs analytic disk",
+                xlabel="epsilon = v / (R |omega|)",
+                ylabel="|Tz| / (R |F_horiz|)",
+                series=[reference, *coupling_series],
+                x_range=rc.padded_range(eps_all or [lo, hi], floor_span=0.2),
+                y_range=rc.padded_range(all_y, include=(0.0,), floor_span=0.2),
             ),
         ]
     )
@@ -382,7 +561,7 @@ def _build_html(
             "Figure 1",
             "<p>Figure 1 checks the coupled state response. A mismatch here means the reduced contact set is changing "
             "how friction is split between translation and yaw spin.</p>\n"
-            + _figure_state_history(runs, summaries, selected_epsilon=selected_epsilon),
+            + _figure_state_history(runs, selected_epsilon=selected_epsilon),
         ),
         rc.TabPanel(
             "Figure 2",
@@ -395,6 +574,14 @@ def _build_html(
             "<p>Figure 3 summarizes the sweep across initial coupling ratios. It keeps the non-stopped cases visible "
             "through final horizontal speed instead of hiding them behind missing stop times.</p>\n"
             + _figure_sweep_summary(summaries),
+        ),
+        rc.TabPanel(
+            "Figure 4",
+            "<p>Figure 4 is the pointwise Farkas check: the measured torque-to-force lever ratio "
+            "<code>|Tz|/(R|F_horiz|)</code> against the uniform-disk prediction <code>T(eps)/F(eps)</code>. The "
+            "radius is recovered from logged data and the friction/load factor cancels in the ratio, so both "
+            "modes should sit on the analytic curve if reduction preserves the force-torque coupling.</p>\n"
+            + _figure_coupling(runs),
         ),
     ]
 
@@ -411,6 +598,13 @@ def _build_html(
             f"<p>CSV data currently contains epsilon0 values: {epsilons}. Initial yaw rate is "
             f"{rc.format_number(initial_omega)} rad/s. Figure time histories use epsilon0 = "
             f"{rc.format_number(selected_epsilon)}.</p>",
+            "<h2>Reference</h2>",
+            "<p>Uniform-pressure sliding-spinning disk (Farkas et al., Phys. Rev. Lett. 90, 248302, 2003): the "
+            "friction force and yaw torque are <code>|F| = mu Fn F(eps)</code> and <code>|Tz| = mu Fn R T(eps)</code>, "
+            "with F and T the closed-form elliptic-integral functions of <code>eps = v/(R|omega|)</code>. Their "
+            "ratio <code>|Tz|/(R|F_horiz|) = T(eps)/F(eps)</code> is independent of friction and normal load. The "
+            "disk also has a universal terminal ratio <code>eps* ~ 0.653</code>, reached regardless of initial "
+            "conditions, with sliding and spinning stopping at the same moment.</p>",
             "<h2>Measured Quantities</h2>",
             "<ul>",
             "<li>Solver force and torque on the cylinder.</li>",

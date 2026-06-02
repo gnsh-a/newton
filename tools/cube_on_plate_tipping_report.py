@@ -59,13 +59,26 @@ def load_summaries(csv_dir: str | Path) -> dict[str, dict[str, str]]:
 
 def _figure_state(rows_by_mode: dict[str, list[dict[str, str]]]) -> str:
     pitch_series = rc.mode_series(rows_by_mode, x_key="applied_force_over_ftip", y_key="cube_pitch_deg")
-    cop_series = rc.mode_series(
-        rows_by_mode, x_key="applied_force_over_ftip", y_key="center_pressure_x_over_half_extent"
-    )
+    # Physical center of pressure = normal-force offset, removing the base friction torque
+    # (-Ty/Fz folds in friction and reads half the true offset): cop/he = (-Ty/Fz)/he - Fx/Fz.
+    cop_series = []
+    for mode in rc.MODES:
+        rows = rows_by_mode.get(mode)
+        if not rows:
+            continue
+        cop_xs = [rc.as_float(row, "applied_force_over_ftip") for row in rows]
+        cop_ys = []
+        for row in rows:
+            fz = rc.as_float(row, "solver_fz_N")
+            fx = rc.as_float(row, "solver_fx_N")
+            cop_he = rc.as_float(row, "center_pressure_x_over_half_extent")
+            cop_ys.append((cop_he - fx / fz) if fz else float("nan"))
+        cop_series.append(rc.Series(cop_xs, cop_ys, rc.MODE_LABELS[mode], rc.MODE_COLORS[mode]))
     x_series = rc.mode_series(rows_by_mode, x_key="applied_force_over_ftip", y_key="cube_x_m", scale=1000.0)
     all_xs = [x for series in pitch_series for x in series.xs]
     x_range = rc.padded_range(all_xs, include=(0.0, 1.0), floor_span=0.2)
     front_edge = rc.Series([0.0, max(all_xs or [1.0])], [1.0, 1.0], "front edge", rc.REFERENCE_COLOR, dash="5 4")
+    analytic_cop = rc.Series([0.0, 1.0], [0.0, 1.0], "analytic cop = F/Ftip", rc.REFERENCE_COLOR, dash="2 3")
     return rc.figure_grid(
         [
             rc.Figure(
@@ -82,7 +95,7 @@ def _figure_state(rows_by_mode: dict[str, list[dict[str, str]]]) -> str:
                 title="Center-pressure shift",
                 xlabel="applied force / analytic tip force",
                 ylabel="cop_x / half extent",
-                series=[front_edge, *cop_series],
+                series=[analytic_cop, front_edge, *cop_series],
                 x_range=x_range,
                 y_range=rc.padded_range(
                     [y for series in cop_series for y in series.ys], include=(0.0, 1.0), floor_span=0.2
@@ -295,11 +308,22 @@ def _build_html(
             f"<p>The run uses <code>mu = {mu}</code>, so the analytic tip force <code>m*g/2</code> is below the "
             "sliding force <code>mu*m*g</code>. The useful comparison is pitch and center-pressure shift before the "
             "event, plus event force if the cube tips or slides.</p>",
+            "<h2>Reference</h2>",
+            (
+                "<p>Rigid-body quasi-static tipping, with no compliant model needed. With the push at the top "
+                "face the cube tips about its front bottom edge at <code>F_tip = m*g/2</code>, and would slide "
+                f"at <code>F_slide = mu*m*g</code> (here mu = {mu}, above 0.5, so it tips before it slides). "
+                "Before tipping the cube is in static equilibrium, so the center of pressure (the normal-force "
+                "offset, <code>-(Ty + h*Fx)/Fz</code>) grows linearly with the applied force, "
+                "<code>cop_x/half_extent = F/F_tip</code>, reaching the front edge exactly at the tip force. A "
+                "rigid cube has zero pre-tip pitch; any pitch before the tip is a contact-compliance effect.</p>"
+            ),
             "<h2>Measured Quantities</h2>",
             "<ul>",
             "<li>Cube pitch and horizontal drift versus applied force.</li>",
             "<li>Solver force and torque on the cube.</li>",
-            "<li>Center-pressure shift computed from solver wrench: <code>cop_x = -Ty / Fz</code>.</li>",
+            "<li>Center of pressure from the solver wrench with the base friction torque removed: "
+            "<code>cop_x = -(Ty + h*Fx) / Fz</code>.</li>",
             "<li>First tip or slide event force, and solver contact-count reduction.</li>",
             "</ul>",
             "<h2>Results</h2>",

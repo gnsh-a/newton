@@ -17,7 +17,11 @@ TIMESERIES_COLUMNS = (
     "epsilon",
     "horizontal_speed_m_per_s",
     "cylinder_omega_z_rad_per_s",
+    "omega_abs_rad_per_s",
+    "spin_edge_speed_m_per_s",
     "solver_fx_N",
+    "solver_fy_N",
+    "solver_fz_N",
     "solver_tz_Nm",
     "solver_force_count",
 )
@@ -67,7 +71,11 @@ def _timeseries_rows(*, epsilon0: float, mode: str, force_count: int, force_x: f
                 "epsilon": str(epsilon0 + 0.1 * frame),
                 "horizontal_speed_m_per_s": str(max(0.25 - 0.05 * frame, 0.0)),
                 "cylinder_omega_z_rad_per_s": str(max(10.0 - 2.0 * frame, 0.0)),
+                "omega_abs_rad_per_s": str(max(10.0 - 2.0 * frame, 0.0)),
+                "spin_edge_speed_m_per_s": str(0.05 * max(10.0 - 2.0 * frame, 0.0)),
                 "solver_fx_N": str(force_x),
+                "solver_fy_N": "0.0",
+                "solver_fz_N": "0.184",
                 "solver_tz_Nm": str(torque_z),
                 "solver_force_count": str(force_count),
             }
@@ -122,7 +130,7 @@ class TestSlidingSpinningCylinderReport(unittest.TestCase):
             self.assertIn("Figure 1", report)
             self.assertIn("Figure 2", report)
             self.assertIn("Figure 3", report)
-            self.assertIn("reference epsilon", report)
+            self.assertIn("Farkas analytic", report)
             self.assertIn("reduce on", report)
             self.assertIn("Generated from", report)
 
