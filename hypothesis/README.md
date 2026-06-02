@@ -54,11 +54,12 @@ Name hypothesis records as `H<number>_<experiment_name>_hypothesis.md`. The repo
 Report scripts live in `tools/<experiment_name>_report.py` and read the CSVs the
 experiment wrote. All reports share one renderer, `tools/_report_common.py`, so
 they look identical and cannot drift apart. Do not hand-write `<style>` blocks,
-SVG, or page scaffolding in a report script; build data specs and let the shared
-module render them.
+chart markup, or page scaffolding in a report script; build data specs and let
+the shared module render them.
 
-The shared module emits self-contained inline SVG with no external dependencies,
-so a report is a single offline HTML file. It imports only the standard library.
+The shared module emits interactive Plotly charts and loads `plotly.js` from its
+CDN, so a report is a single HTML file that needs a network connection the first
+time it is opened. The generator itself imports only the standard library.
 
 1. Import the shared module as a sibling.
    - Add the script's directory to `sys.path`, then `import _report_common as rc`.

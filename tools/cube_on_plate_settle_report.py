@@ -54,33 +54,6 @@ SOLVER_SERIES = (
     ("solver_force_count", "force count", None),
 )
 
-SCHEMATIC_CSS = """\
-    .setup-schematic {
-      margin: 16px 0 12px;
-      max-width: 760px;
-    }
-    .setup-schematic svg {
-      display: block;
-      width: 100%;
-      height: auto;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #ffffff;
-    }
-    .schematic-bg { fill: #ffffff; }
-    .plate { fill: #d1d5db; stroke: #6b7280; stroke-width: 1.2; }
-    .contact-line { stroke: #111827; stroke-width: 1.4; }
-    .cube { fill: #bfdbfe; stroke: #2563eb; stroke-width: 1.4; }
-    .cube-settled { fill: #dbeafe; stroke: #2563eb; stroke-width: 1.2; stroke-dasharray: 5 4; }
-    .gravity-arrow, .measure-line, .measure-tick {
-      stroke: #111827;
-      stroke-width: 1.4;
-      fill: none;
-    }
-    .measure-line { stroke-dasharray: 4 4; }
-    .schematic-title { fill: var(--ink); font-size: 18px; font-weight: 650; }
-    .schematic-label { fill: var(--muted); font-size: 13px; }"""
-
 
 @dataclass(frozen=True)
 class PhysicsConstants:
@@ -304,7 +277,7 @@ def _padded_range(
     if low == high:
         half_span = max(abs(low) * 0.05, floor_span * 0.5, 1.0)
         return low - half_span, high + half_span
-    span = max(high - low, floor_span)
+    span = high - low
     center = 0.5 * (low + high)
     half_span = 0.55 * span
     return center - half_span, center + half_span
@@ -451,16 +424,11 @@ def render_physics_summary_figure(metrics: dict[float, dict[str, dict[str, float
     torque_values = _all_metric_values(metrics, "torque_norm_mean")
     penetration_values = rc.finite(_all_metric_values(metrics, "penetration_depth_mean_mm"))
     support_offset_values = rc.finite(_all_metric_values(metrics, "support_offset_mean_mm"))
-    lateral_high = max(0.002, 1.15 * max([*lateral_values, 0.0]))
-    torque_high = max(0.002, 1.15 * max([*torque_values, 0.0]))
-    penetration_high = max(0.05, 1.2 * max([*penetration_values, 0.0]))
-    support_offset_high = max(0.05, 1.2 * max([*support_offset_values, 0.0]))
     drift_values = rc.finite(_all_metric_values(metrics, "final_drift_mm"))
     tilt_values = rc.finite(_all_metric_values(metrics, "final_tilt_deg"))
-    drift_high = max(1.2 * PRACTICAL_LENGTH_FLOOR_MM, 1.2 * max([*drift_values, 0.0]))
-    tilt_high = max(1.0e-4, 1.2 * max([*tilt_values, 0.0]))
 
     floor = PRACTICAL_NORMALIZED_FLOOR
+    length_floor = PRACTICAL_LENGTH_FLOOR_MM
     return rc.figure_grid(
         [
             rc.Figure(
@@ -479,7 +447,7 @@ def render_physics_summary_figure(metrics: dict[float, dict[str, dict[str, float
                 ylabel="mean sqrt(Fx^2+Fy^2) / (m*g)",
                 series=_metric_plot_series(metrics, key="lateral_norm_mean"),
                 x_range=x_range,
-                y_range=(0.0, lateral_high),
+                y_range=rc.zero_range(lateral_values),
                 ybands=((0.0, floor, "practical floor", "#22c55e"),),
             ),
             rc.Figure(
@@ -488,7 +456,7 @@ def render_physics_summary_figure(metrics: dict[float, dict[str, dict[str, float
                 ylabel="mean ||tau|| / (m*g*L)",
                 series=_metric_plot_series(metrics, key="torque_norm_mean"),
                 x_range=x_range,
-                y_range=(0.0, torque_high),
+                y_range=rc.zero_range(torque_values),
                 ybands=((0.0, floor, "practical floor", "#22c55e"),),
             ),
             rc.Figure(
@@ -497,8 +465,8 @@ def render_physics_summary_figure(metrics: dict[float, dict[str, dict[str, float
                 ylabel="mean penetration depth [mm]",
                 series=_metric_plot_series(metrics, key="penetration_depth_mean_mm"),
                 x_range=x_range,
-                y_range=(0.0, penetration_high),
-                ybands=((0.0, PRACTICAL_LENGTH_FLOOR_MM, "practical floor", "#22c55e"),),
+                y_range=rc.zero_range(penetration_values),
+                ybands=((0.0, length_floor, "practical floor", "#22c55e"),),
             ),
             rc.Figure(
                 title="Support-point offset",
@@ -506,8 +474,8 @@ def render_physics_summary_figure(metrics: dict[float, dict[str, dict[str, float
                 ylabel="mean sqrt(Tx^2+Ty^2)/|Fz| [mm]",
                 series=_metric_plot_series(metrics, key="support_offset_mean_mm"),
                 x_range=x_range,
-                y_range=(0.0, support_offset_high),
-                ybands=((0.0, PRACTICAL_LENGTH_FLOOR_MM, "practical floor", "#22c55e"),),
+                y_range=rc.zero_range(support_offset_values),
+                ybands=((0.0, length_floor, "practical floor", "#22c55e"),),
             ),
             rc.Figure(
                 title="Final lateral drift",
@@ -515,9 +483,9 @@ def render_physics_summary_figure(metrics: dict[float, dict[str, dict[str, float
                 ylabel="final sqrt(x^2+y^2) [mm]",
                 series=_metric_plot_series(metrics, key="final_drift_mm"),
                 x_range=x_range,
-                y_range=(-0.08 * drift_high, drift_high),
+                y_range=rc.zero_range(drift_values),
                 hlines=((0.0, "rigid: no drift", "#111827"),),
-                ybands=((0.0, PRACTICAL_LENGTH_FLOOR_MM, "practical floor", "#22c55e"),),
+                ybands=((0.0, length_floor, "practical floor", "#22c55e"),),
             ),
             rc.Figure(
                 title="Final tilt",
@@ -525,7 +493,7 @@ def render_physics_summary_figure(metrics: dict[float, dict[str, dict[str, float
                 ylabel="final tilt [deg]",
                 series=_metric_plot_series(metrics, key="final_tilt_deg"),
                 x_range=x_range,
-                y_range=(-0.08 * tilt_high, tilt_high),
+                y_range=rc.zero_range(tilt_values),
                 hlines=((0.0, "rigid: no tilt", "#111827"),),
             ),
         ],
@@ -585,7 +553,7 @@ def render_numerics_figure(metrics: dict[float, dict[str, dict[str, float | bool
                 ylabel="mean reduce on / reduce off force entries",
                 series=_count_ratio_series(metrics),
                 x_range=x_range,
-                y_range=(0.0, max(1.0, 1.15 * max([*ratio_values, 0.0]))),
+                y_range=rc.zero_range(ratio_values),
                 hlines=((1.0, "no reduction", "#111827"),),
             ),
             rc.Figure(
@@ -594,7 +562,7 @@ def render_numerics_figure(metrics: dict[float, dict[str, dict[str, float | bool
                 ylabel="max utilization",
                 series=_unreduced_metric_series(metrics, "buffer_utilization_max", "max of all stages", "#0891b2"),
                 x_range=x_range,
-                y_range=(0.0, max(0.1, 1.15 * max([*buffer_values, 0.0]))),
+                y_range=rc.zero_range(buffer_values),
                 hlines=((1.0, "capacity", "#111827"),),
             ),
             rc.Figure(
@@ -603,7 +571,7 @@ def render_numerics_figure(metrics: dict[float, dict[str, dict[str, float | bool
                 ylabel="max rigid_contact_count / capacity",
                 series=_unreduced_metric_series(metrics, "rigid_contact_utilization_max", "rigid contacts", "#16a34a"),
                 x_range=x_range,
-                y_range=(0.0, max(0.1, 1.15 * max([*rigid_values, 0.0]))),
+                y_range=rc.zero_range(rigid_values),
                 hlines=((1.0, "capacity", "#111827"),),
             ),
         ],
@@ -688,44 +656,6 @@ def render_summary_cards(metrics: dict[float, dict[str, dict[str, float | bool]]
             "</ul>",
         ]
     )
-
-
-def render_setup_schematic(
-    metrics: dict[float, dict[str, dict[str, float | bool]]], constants: PhysicsConstants
-) -> str:
-    heights_mm = ", ".join(rc.format_number(1000.0 * height, precision=3) for height in sorted(metrics))
-    cube_side_mm = rc.format_number(1000.0 * constants.cube_side_m, precision=3)
-    plate_side_mm = rc.format_number(1000.0 * constants.plate_side_m, precision=3)
-    plate_thickness_mm = rc.format_number(1000.0 * constants.plate_thickness_m, precision=3)
-    return f"""
-<figure class="setup-schematic" aria-label="cube-on-plate settle schematic">
-<svg viewBox="0 0 760 240" role="img">
-<title>Cube-on-plate settle setup</title>
-<defs>
-  <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
-    <path d="M0,0 L8,4 L0,8 Z" fill="#111827"/>
-  </marker>
-</defs>
-<rect x="0" y="0" width="760" height="240" class="schematic-bg"/>
-<rect x="130" y="172" width="500" height="26" rx="2" class="plate"/>
-<line x1="130" y1="172" x2="630" y2="172" class="contact-line"/>
-<rect x="320" y="86" width="92" height="92" rx="3" class="cube"/>
-<rect x="320" y="118" width="92" height="60" rx="3" class="cube-settled"/>
-<line x1="456" y1="82" x2="456" y2="166" class="measure-line"/>
-<line x1="446" y1="86" x2="466" y2="86" class="measure-tick"/>
-<line x1="446" y1="172" x2="466" y2="172" class="measure-tick"/>
-<text x="470" y="132" class="schematic-label">drop height h</text>
-<line x1="240" y1="72" x2="240" y2="128" class="gravity-arrow" marker-end="url(#arrowhead)"/>
-<text x="218" y="64" class="schematic-label">g</text>
-<text x="322" y="74" class="schematic-label">cube side {rc.escape(cube_side_mm)} mm</text>
-<text x="284" y="212" class="schematic-label">plate {rc.escape(plate_side_mm)} x {rc.escape(plate_side_mm)} x {rc.escape(plate_thickness_mm)} mm</text>
-<text x="36" y="40" class="schematic-title">Settle comparison</text>
-<text x="36" y="68" class="schematic-label">modes: reduce off vs reduce on</text>
-<text x="36" y="92" class="schematic-label">pre-prune: off in both</text>
-<text x="36" y="116" class="schematic-label">heights: {rc.escape(heights_mm)} mm</text>
-</svg>
-</figure>
-"""
 
 
 def render_experiment_record(
@@ -910,7 +840,6 @@ def render_html_report(
         [
             f"<h1>{rc.escape(PAGE_TITLE)}</h1>",
             render_experiment_record(metrics, constants),
-            render_setup_schematic(metrics, constants),
             render_summary_cards(metrics, constants),
             "<h2>Figures</h2>",
             f"<p>{window_note}</p>",
@@ -919,7 +848,7 @@ def render_html_report(
             render_metrics_table(metrics),
         ]
     )
-    return rc.render_page(title=PAGE_TITLE, body=body, extra_css=SCHEMATIC_CSS)
+    return rc.render_page(title=PAGE_TITLE, body=body)
 
 
 def write_html_report(

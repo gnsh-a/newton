@@ -5,14 +5,14 @@
 
 The per-experiment report scripts (``tools/*_report.py``) read CSVs and render a
 self-contained HTML page. Historically each script re-implemented the same CSV
-helpers, axis math, SVG plotter, and page shell, which let the reports drift
+helpers, axis math, plotting code, and page shell, which let the reports drift
 apart visually. This module is the single source of truth for all of that.
 
 The plotting model is a backend boundary: report scripts build :class:`Figure`
-specifications (data, not markup) and call :func:`render_figure`. The current
-backend emits inline SVG with no external dependencies, so reports stay tiny and
-open offline. A different backend (e.g. Plotly) can be swapped in here without
-touching the report scripts.
+specifications (data, not markup) and call :func:`render_figure`. The backend
+emits interactive `Plotly <https://plotly.com/javascript/>`_ charts; the page
+shell loads ``plotly.js`` from its CDN, so a report needs a network connection
+the first time it is opened. Swapping the backend never touches a report script.
 
 This module intentionally imports only the standard library.
 """
@@ -21,9 +21,14 @@ from __future__ import annotations
 
 import csv
 import html
+import itertools
+import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
+
+# Pinned Plotly.js build loaded from the CDN by every rendered page.
+PLOTLY_CDN_URL = "https://cdn.plot.ly/plotly-2.35.2.min.js"
 
 # --------------------------------------------------------------------------- #
 # Canonical reduce off/on palette, shared by every report.
@@ -50,7 +55,7 @@ class Series:
         color: Stroke/marker color as a CSS color string.
         draw_line: Connect the points with a polyline.
         draw_marker: Draw a circular marker at each point.
-        dash: SVG ``stroke-dasharray`` value, or ``None`` for a solid line.
+        dash: Render the line dashed when set to any truthy value, else solid.
     """
 
     xs: list[float]
@@ -73,10 +78,10 @@ class Figure:
         series: Data series, drawn in order.
         x_range: ``(low, high)`` data bounds for the x-axis.
         y_range: ``(low, high)`` data bounds for the y-axis.
-        x_ticks: Explicit x tick positions, or ``None`` for evenly spaced ticks.
+        x_ticks: Explicit x tick positions, or ``None`` for Plotly's auto ticks.
         log_y: Render the y-axis on a base-10 log scale.
-        width: SVG viewbox width.
-        height: SVG viewbox height.
+        width: Retained for API compatibility; Plotly charts size responsively.
+        height: Chart height in pixels.
         hlines: Dashed horizontal reference lines as ``(value, label, color)``,
             drawn with the label right-aligned at the line.
         xbands: Shaded vertical regions as ``(low, high, label, color)``.
@@ -183,7 +188,9 @@ def padded_range(
     Args:
         values: Data values to bound.
         include: Extra values the range must contain (e.g. a reference level).
-        floor_span: Minimum span, used when the data is flat or nearly so.
+        floor_span: Fallback span used only when the data (with ``include``) is
+            perfectly flat. It is not a minimum for real data, so a small signal
+            keeps its own scale and is not flattened by an arbitrary floor.
     """
 
     valid = finite([*values, *include])
@@ -194,30 +201,36 @@ def padded_range(
     if low == high:
         half_span = max(abs(low) * 0.05, floor_span * 0.5, 1.0e-9)
         return low - half_span, high + half_span
-    span = max(high - low, floor_span)
+    span = high - low
     center = 0.5 * (low + high)
     half_span = 0.55 * span
     return center - half_span, center + half_span
 
 
-def linear_ticks(low: float, high: float, count: int = 5) -> list[float]:
-    """Return ``count`` evenly spaced tick positions in ``[low, high]``."""
+def zero_range(values: list[float], *, refs: tuple[float, ...] = ()) -> tuple[float, float]:
+    """Adaptive y-range anchored at zero, for should-be-zero / non-negative metrics.
 
-    if count <= 1 or high <= low:
-        return [low]
-    return [low + (high - low) * i / (count - 1) for i in range(count)]
+    The range always contains zero, adapts its top to the data (and any ``refs``,
+    e.g. a reference-band ceiling), and adds a little head- and foot-room so a
+    baseline at zero stays visible. Unlike :func:`padded_range` with a
+    ``floor_span``, it imposes no fixed minimum span, so a small signal is not
+    flattened by an arbitrary floor; a near-zero signal instead takes its scale
+    from ``refs`` (the practical-floor band) and the framework's reference
+    inclusion.
 
+    Args:
+        values: Data values.
+        refs: Extra values the range must contain (e.g. a practical-floor band
+            ceiling) so the reference stays visible when the data is near zero.
+    """
 
-def log_ticks(low: float, high: float) -> list[float]:
-    """Return base-10 decade tick positions spanning ``[low, high]``."""
-
-    if high <= 0.0:
-        return [1.0]
-    if low <= 0.0:
-        low = high / 1000.0
-    lo_exp = math.floor(math.log10(low))
-    hi_exp = math.ceil(math.log10(high))
-    return [10.0**exp for exp in range(lo_exp, hi_exp + 1) if low <= 10.0**exp <= high]
+    vals = finite([*values, *refs, 0.0])
+    low, high = min(vals), max(vals)
+    span = high - low
+    if span <= 0.0:
+        span = max(abs(high), 1.0e-9)
+        high = low + span
+    return (low - 0.06 * span, high + 0.15 * span)
 
 
 # --------------------------------------------------------------------------- #
@@ -264,178 +277,249 @@ def mode_series(
 
 
 # --------------------------------------------------------------------------- #
-# SVG rendering backend.
+# Plotly rendering backend.
 # --------------------------------------------------------------------------- #
 
+# Monotonic id source so every chart on a page gets a unique container.
+_PLOT_IDS = itertools.count(1)
 
-def _svg_text(x: float, y: float, text: str, *, classes: str = "", anchor: str = "start") -> str:
-    class_attr = f' class="{classes}"' if classes else ""
-    return f'<text x="{x:.2f}" y="{y:.2f}" text-anchor="{anchor}"{class_attr}>{escape(text)}</text>'
+_BAND_LABEL_COLOR = "#5f6b7a"
 
 
-def render_figure(fig: Figure) -> str:
-    """Render a :class:`Figure` to a standalone inline ``<svg>`` element."""
+def _clean(values: list[float], *, positive_only: bool = False) -> list[float | None]:
+    """Map non-finite (and, for log axes, non-positive) values to ``None`` gaps."""
 
-    margin_left = 80
-    margin_right = 28
-    margin_top = 36
-    margin_bottom = 56
-    plot_width = fig.width - margin_left - margin_right
-    plot_height = fig.height - margin_top - margin_bottom
+    cleaned: list[float | None] = []
+    for value in values:
+        number = float(value)
+        if not math.isfinite(number) or (positive_only and number <= 0.0):
+            cleaned.append(None)
+        else:
+            cleaned.append(number)
+    return cleaned
+
+
+def _plotly_traces(fig: Figure) -> list[dict]:
+    """Build the Plotly trace list for ``fig``."""
+
+    traces: list[dict] = []
+    for plot_series in fig.series:
+        modes = []
+        if plot_series.draw_line:
+            modes.append("lines")
+        if plot_series.draw_marker:
+            modes.append("markers")
+        traces.append(
+            {
+                "type": "scatter",
+                "x": _clean(plot_series.xs),
+                "y": _clean(plot_series.ys, positive_only=fig.log_y),
+                "mode": "+".join(modes) if modes else "markers",
+                "name": plot_series.label,
+                "line": {
+                    "color": plot_series.color,
+                    "width": 2.2,
+                    "dash": "dash" if plot_series.dash else "solid",
+                },
+                "marker": {"color": plot_series.color, "size": 7, "line": {"color": "#ffffff", "width": 1}},
+                "connectgaps": False,
+            }
+        )
+    return traces
+
+
+def _plotly_layout(fig: Figure) -> dict:
+    """Build the Plotly layout (axes, reference shapes, bands) for ``fig``."""
 
     x_low, x_high = fig.x_range
     if x_high <= x_low:
         x_high = x_low + 1.0
 
+    xaxis: dict = {
+        "title": {"text": fig.xlabel},
+        "range": [x_low, x_high],
+        "zeroline": False,
+        "gridcolor": "#e7ebf2",
+        "linecolor": "#7b8794",
+        "ticks": "outside",
+        "tickcolor": "#7b8794",
+    }
+    if fig.x_ticks is not None:
+        xaxis["tickmode"] = "array"
+        xaxis["tickvals"] = list(fig.x_ticks)
+
+    yaxis: dict = {
+        "title": {"text": fig.ylabel},
+        "zeroline": False,
+        "gridcolor": "#e7ebf2",
+        "linecolor": "#7b8794",
+        "ticks": "outside",
+        "tickcolor": "#7b8794",
+    }
     y_low, y_high = fig.y_range
+    # Keep reference *lines* in view by growing the range to fit them, so an
+    # adaptive data-driven range never clips an hline the report drew. Shaded
+    # bands are background tolerance zones, not values to compare against, so
+    # they are allowed to clip: the data drives the scale and the band simply
+    # fills whatever is visible (data entirely inside the band still reads as
+    # "all within tolerance").
+    ref_values = [v for v, _label, _color in fig.hlines]
+    ref_values = [r for r in finite(ref_values) if not fig.log_y or r > 0.0]
+    if ref_values:
+        y_low = min(y_low, *ref_values)
+        y_high = max(y_high, *ref_values)
+
     if fig.log_y:
-        y_low = max(y_low, 1.0e-12)
-        y_high = max(y_high, y_low * 10.0)
-        y_low_t, y_high_t = math.log10(y_low), math.log10(y_high)
+        low = max(y_low, 1.0e-12)
+        high = max(y_high, low * 10.0)
+        yaxis["type"] = "log"
+        yaxis["range"] = [math.log10(low), math.log10(high)]
     else:
-        y_low_t, y_high_t = y_low, y_high
-    if y_high_t <= y_low_t:
-        y_high_t = y_low_t + 1.0
+        if y_high <= y_low:
+            y_high = y_low + 1.0
+        yaxis["range"] = [y_low, y_high]
 
-    def sx(value: float) -> float:
-        return margin_left + (value - x_low) / (x_high - x_low) * plot_width
+    shapes: list[dict] = []
+    annotations: list[dict] = []
 
-    def sy(value: float) -> float:
-        coord = math.log10(value) if fig.log_y else value
-        return margin_top + plot_height - (coord - y_low_t) / (y_high_t - y_low_t) * plot_height
-
-    def visible(x: float, y: float) -> bool:
-        return math.isfinite(x) and math.isfinite(y) and (not fig.log_y or y > 0.0)
-
-    parts = [
-        f'<svg class="plot" viewBox="0 0 {fig.width} {fig.height}" role="img" aria-label="{escape(fig.title)}">',
-        f"<title>{escape(fig.title)}</title>",
-        f'<rect x="0" y="0" width="{fig.width}" height="{fig.height}" class="plot-shell"/>',
-        f'<rect x="{margin_left}" y="{margin_top}" width="{plot_width}" height="{plot_height}" class="plot-area"/>',
-    ]
-
-    for band_low, band_high, _label, color in fig.ybands:
-        clipped_low = max(min(band_low, band_high), y_low)
-        clipped_high = min(max(band_low, band_high), y_high)
-        if clipped_high > clipped_low:
-            band_top = sy(clipped_high)
-            band_bottom = sy(clipped_low)
-            parts.append(
-                f'<rect x="{margin_left:.2f}" y="{band_top:.2f}" width="{plot_width:.2f}" '
-                f'height="{band_bottom - band_top:.2f}" fill="{color}" opacity="0.16"/>'
-            )
-
-    for band_low, band_high, _label, color in fig.xbands:
-        clipped_low = max(min(band_low, band_high), x_low)
-        clipped_high = min(max(band_low, band_high), x_high)
-        if clipped_high > clipped_low:
-            band_left = sx(clipped_low)
-            band_right = sx(clipped_high)
-            parts.append(
-                f'<rect x="{band_left:.2f}" y="{margin_top:.2f}" width="{band_right - band_left:.2f}" '
-                f'height="{plot_height:.2f}" fill="{color}" opacity="0.5"/>'
-            )
-
-    y_ticks = log_ticks(y_low, y_high) if fig.log_y else linear_ticks(y_low_t, y_high_t)
-    for tick in y_ticks:
-        if fig.log_y and tick <= 0.0:
-            continue
-        y = sy(tick)
-        parts.append(
-            f'<line x1="{margin_left:.2f}" y1="{y:.2f}" x2="{margin_left + plot_width:.2f}" '
-            f'y2="{y:.2f}" class="grid-line"/>'
+    for band_low, band_high, label, color in fig.ybands:
+        shapes.append(
+            {
+                "type": "rect",
+                "xref": "paper",
+                "x0": 0,
+                "x1": 1,
+                "yref": "y",
+                "y0": band_low,
+                "y1": band_high,
+                "fillcolor": color,
+                "opacity": 0.16,
+                "line": {"width": 0},
+                "layer": "below",
+            }
         )
-        parts.append(
-            _svg_text(margin_left - 10, y + 4, format_number(tick, precision=3), classes="axis-label", anchor="end")
+        if label:
+            annotations.append(
+                {
+                    "xref": "paper",
+                    "x": 0.01,
+                    "yref": "y",
+                    "y": 0.5 * (band_low + band_high),
+                    "text": label,
+                    "showarrow": False,
+                    "xanchor": "left",
+                    "font": {"size": 11, "color": _BAND_LABEL_COLOR},
+                }
+            )
+
+    for band_low, band_high, label, color in fig.xbands:
+        shapes.append(
+            {
+                "type": "rect",
+                "yref": "paper",
+                "y0": 0,
+                "y1": 1,
+                "xref": "x",
+                "x0": band_low,
+                "x1": band_high,
+                "fillcolor": color,
+                "opacity": 0.5,
+                "line": {"width": 0},
+                "layer": "below",
+            }
         )
-
-    x_ticks = fig.x_ticks if fig.x_ticks is not None else linear_ticks(x_low, x_high)
-    for tick in x_ticks:
-        x = sx(tick)
-        parts.append(
-            f'<line x1="{x:.2f}" y1="{margin_top + plot_height:.2f}" x2="{x:.2f}" '
-            f'y2="{margin_top + plot_height + 5:.2f}" class="axis-line"/>'
-        )
-        parts.append(
-            _svg_text(
-                x,
-                margin_top + plot_height + 22,
-                format_number(tick, precision=3),
-                classes="axis-label",
-                anchor="middle",
+        if label:
+            annotations.append(
+                {
+                    "yref": "paper",
+                    "y": 0.98,
+                    "xref": "x",
+                    "x": 0.5 * (band_low + band_high),
+                    "text": label,
+                    "showarrow": False,
+                    "yanchor": "top",
+                    "font": {"size": 11, "color": _BAND_LABEL_COLOR},
+                }
             )
-        )
-
-    parts.append(
-        f'<line x1="{margin_left:.2f}" y1="{margin_top:.2f}" x2="{margin_left:.2f}" '
-        f'y2="{margin_top + plot_height:.2f}" class="axis-line"/>'
-    )
-    parts.append(
-        f'<line x1="{margin_left:.2f}" y1="{margin_top + plot_height:.2f}" '
-        f'x2="{margin_left + plot_width:.2f}" y2="{margin_top + plot_height:.2f}" class="axis-line"/>'
-    )
-
-    for value, _label, color in fig.hlines:
-        if y_low <= value <= y_high:
-            line_y = sy(value)
-            parts.append(
-                f'<line x1="{margin_left:.2f}" y1="{line_y:.2f}" x2="{margin_left + plot_width:.2f}" '
-                f'y2="{line_y:.2f}" stroke="{color}" stroke-width="1.2" stroke-dasharray="5 5"/>'
-            )
-
-    for plot_series in fig.series:
-        points = [(sx(x), sy(y)) for x, y in zip(plot_series.xs, plot_series.ys, strict=False) if visible(x, y)]
-        if plot_series.draw_line and points:
-            dash_attr = f' stroke-dasharray="{plot_series.dash}"' if plot_series.dash else ""
-            point_attr = " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
-            parts.append(
-                f'<polyline points="{point_attr}" fill="none" stroke="{plot_series.color}" '
-                f'stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"{dash_attr}/>'
-            )
-        if plot_series.draw_marker:
-            for x, y in points:
-                parts.append(
-                    f'<circle cx="{x:.2f}" cy="{y:.2f}" r="4.3" fill="{plot_series.color}" '
-                    'stroke="#ffffff" stroke-width="1.1"/>'
-                )
-
-    parts.append(_svg_text(fig.width / 2, 23, fig.title, classes="plot-title", anchor="middle"))
-    parts.append(_svg_text(fig.width / 2, fig.height - 13, fig.xlabel, classes="axis-title", anchor="middle"))
-    parts.append(
-        f'<text x="18" y="{margin_top + plot_height / 2:.2f}" '
-        f'transform="rotate(-90 18 {margin_top + plot_height / 2:.2f})" '
-        f'text-anchor="middle" class="axis-title">{escape(fig.ylabel)}</text>'
-    )
-
-    legend_x = margin_left + plot_width - 172
-    legend_y = margin_top + 16
-    for plot_series in fig.series:
-        if plot_series.draw_line:
-            dash_attr = f' stroke-dasharray="{plot_series.dash}"' if plot_series.dash else ""
-            parts.append(
-                f'<line x1="{legend_x:.2f}" y1="{legend_y:.2f}" x2="{legend_x + 20:.2f}" '
-                f'y2="{legend_y:.2f}" stroke="{plot_series.color}" stroke-width="2.2"{dash_attr}/>'
-            )
-        if plot_series.draw_marker:
-            parts.append(
-                f'<circle cx="{legend_x + 10:.2f}" cy="{legend_y:.2f}" r="4.0" fill="{plot_series.color}" '
-                'stroke="#ffffff" stroke-width="1.0"/>'
-            )
-        parts.append(_svg_text(legend_x + 26, legend_y + 4, plot_series.label, classes="legend-label"))
-        legend_y += 18
 
     for value, label, color in fig.hlines:
-        if not (y_low <= value <= y_high):
-            continue
-        parts.append(
-            f'<line x1="{legend_x:.2f}" y1="{legend_y:.2f}" x2="{legend_x + 20:.2f}" '
-            f'y2="{legend_y:.2f}" stroke="{color}" stroke-width="1.6" stroke-dasharray="5 5"/>'
+        shapes.append(
+            {
+                "type": "line",
+                "xref": "paper",
+                "x0": 0,
+                "x1": 1,
+                "yref": "y",
+                "y0": value,
+                "y1": value,
+                "line": {"color": color, "width": 1.3, "dash": "dash"},
+            }
         )
-        parts.append(_svg_text(legend_x + 26, legend_y + 4, label, classes="legend-label"))
-        legend_y += 18
+        if label:
+            annotations.append(
+                {
+                    "xref": "paper",
+                    "x": 0.99,
+                    "yref": "y",
+                    "y": value,
+                    "text": label,
+                    "showarrow": False,
+                    "xanchor": "right",
+                    "yanchor": "bottom",
+                    "font": {"size": 11, "color": color},
+                }
+            )
 
-    parts.append("</svg>")
-    return "\n".join(parts)
+    return {
+        "title": {"text": fig.title, "font": {"size": 15}, "x": 0.5, "xanchor": "center"},
+        "xaxis": xaxis,
+        "yaxis": yaxis,
+        "shapes": shapes,
+        "annotations": annotations,
+        "legend": {
+            "orientation": "v",
+            "x": 1,
+            "xanchor": "right",
+            "y": 1,
+            "yanchor": "top",
+            "bgcolor": "rgba(255,255,255,0.72)",
+            "bordercolor": "#d8dee8",
+            "borderwidth": 1,
+        },
+        "margin": {"l": 66, "r": 24, "t": 48, "b": 54},
+        "font": {
+            "family": 'Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
+            "color": "#172033",
+            "size": 12,
+        },
+        "paper_bgcolor": "#ffffff",
+        "plot_bgcolor": "#f6f8fb",
+        "hovermode": "closest",
+        "showlegend": True,
+    }
+
+
+def render_figure(fig: Figure) -> str:
+    """Render a :class:`Figure` to a Plotly chart container plus its init script.
+
+    The returned HTML is a sized ``<div>`` followed by a scoped ``<script>`` that
+    calls ``Plotly.newPlot``. The page shell (:func:`render_page`) loads the
+    ``plotly.js`` library once from the CDN.
+    """
+
+    div_id = f"plotfig-{next(_PLOT_IDS)}"
+    payload = json.dumps(
+        {
+            "data": _plotly_traces(fig),
+            "layout": _plotly_layout(fig),
+            "config": {"responsive": True, "displaylogo": False, "displayModeBar": False},
+        }
+    )
+    return (
+        f'<div class="plotly-fig" id="{div_id}" style="height:{fig.height}px"></div>\n'
+        f"<script>(function(){{var s={payload};"
+        f"Plotly.newPlot({div_id!r},s.data,s.layout,s.config);}})();</script>"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -533,6 +617,11 @@ def figure_tabs(panels: list[TabPanel], *, group_id: str = "figs", aria_label: s
         "      for (const item of tabs) item.setAttribute('aria-selected', String(item === tab));\n"
         "      for (const panel of panels)\n"
         "        panel.classList.toggle('active', panel.id === tab.getAttribute('aria-controls'));\n"
+        "      if (window.Plotly) {\n"
+        "        const shown = group.querySelector('.figure-panel.active');\n"
+        "        if (shown)\n"
+        "          shown.querySelectorAll('.js-plotly-plot').forEach((p) => window.Plotly.Plots.resize(p));\n"
+        "      }\n"
         "    });\n"
         "  }\n"
         "})();\n"
@@ -666,41 +755,13 @@ THEME_CSS = """\
         grid-template-columns: 1fr;
       }
     }
-    .plot {
+    .plotly-fig {
       width: 100%;
-      height: auto;
       display: block;
-      overflow: visible;
-    }
-    .plot-shell {
-      fill: #ffffff;
-      stroke: var(--line);
-      rx: 6;
-    }
-    .plot-area {
-      fill: var(--soft);
-    }
-    .grid-line {
-      stroke: #e7ebf2;
-      stroke-width: 1;
-    }
-    .axis-line {
-      stroke: #7b8794;
-      stroke-width: 1;
-    }
-    .axis-label, .legend-label, .reference-label {
-      fill: var(--muted);
-      font-size: 12px;
-    }
-    .axis-title {
-      fill: var(--ink);
-      font-size: 13px;
-      font-weight: 600;
-    }
-    .plot-title {
-      fill: var(--ink);
-      font-size: 14px;
-      font-weight: 700;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #ffffff;
+      overflow: hidden;
     }
     code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -709,7 +770,15 @@ THEME_CSS = """\
     }"""
 
 
-def render_page(*, title: str, body: str, lang: str = "en", css: str | None = None, extra_css: str = "") -> str:
+def render_page(
+    *,
+    title: str,
+    body: str,
+    lang: str = "en",
+    css: str | None = None,
+    extra_css: str = "",
+    with_plotly: bool = True,
+) -> str:
     """Wrap ``body`` in the canonical HTML document shell.
 
     Args:
@@ -719,11 +788,14 @@ def render_page(*, title: str, body: str, lang: str = "en", css: str | None = No
         css: Stylesheet to inline; defaults to :data:`THEME_CSS`.
         extra_css: Report-specific rules appended after the base stylesheet, for
             components the canonical theme does not cover (e.g. a setup grid).
+        with_plotly: Load ``plotly.js`` from the CDN. Set to ``False`` for pages
+            with no charts (e.g. a link index) to skip the unused download.
     """
 
     stylesheet = THEME_CSS if css is None else css
     if extra_css:
         stylesheet = f"{stylesheet}\n{extra_css}"
+    plotly_tag = f'  <script src="{escape(PLOTLY_CDN_URL)}" charset="utf-8"></script>\n' if with_plotly else ""
     return (
         "<!doctype html>\n"
         f'<html lang="{escape(lang)}">\n'
@@ -731,6 +803,7 @@ def render_page(*, title: str, body: str, lang: str = "en", css: str | None = No
         '  <meta charset="utf-8">\n'
         '  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f"  <title>{escape(title)}</title>\n"
+        f"{plotly_tag}"
         "  <style>\n"
         f"{stylesheet}\n"
         "  </style>\n"
