@@ -28,6 +28,9 @@ SUMMARY_COLUMNS = (
     "stopped",
     "stop_time_s",
     "stop_travel_m",
+    "final_y_m",
+    "final_tilt_deg",
+    "max_penetration_depth_m",
     "mean_solver_force_count",
     "max_rigid_contact_count",
     "rigid_contact_capacity",
@@ -84,6 +87,9 @@ def _summary_row(*, speed: float, mode: str, stop_scale: float, force_count: int
         "stopped": "true",
         "stop_time_s": str(expected_time * stop_scale),
         "stop_travel_m": str(expected_travel * stop_scale),
+        "final_y_m": "0.0",
+        "final_tilt_deg": "0.0",
+        "max_penetration_depth_m": "0.0001",
         "mean_solver_force_count": str(force_count),
         "max_rigid_contact_count": str(force_count),
         "rigid_contact_capacity": "131072",
@@ -117,8 +123,8 @@ class TestFlatSlidingBlockReport(unittest.TestCase):
             self.assertTrue((output_dir / report_tool.HYPOTHESIS_RECORD_NAME).exists())
             report = html_path.read_text(encoding="utf-8")
             self.assertIn("H2: Flat Sliding Block Contact Reduction", report)
-            self.assertIn("Figure 1: stopping response vs initial speed", report)
-            self.assertIn("Figure 2: representative time history", report)
+            self.assertIn("Figure 1: primary measurables vs time", report)
+            self.assertIn("Figure 2: additional response vs initial speed", report)
             self.assertIn("Figure 3: contact reduction and buffer sanity", report)
             self.assertIn("Figure 4: SDF resolution probe", report)
             self.assertIn("Coulomb reference", report)

@@ -61,6 +61,7 @@ SUMMARY_COLUMNS = (
     "final_drift_m",
     "mean_solver_force_count",
     "max_rigid_contact_count",
+    "rigid_contact_capacity",
     "max_face_contact_count",
     "buffer_overflow",
     "state_invalid",
@@ -150,6 +151,7 @@ def _summary_row(*, height: float, mode: str, peak_ratio: float, contacts: int) 
         "final_drift_m": "0.0",
         "mean_solver_force_count": str(contacts),
         "max_rigid_contact_count": str(contacts),
+        "rigid_contact_capacity": "131072",
         "max_face_contact_count": "2046",
         "buffer_overflow": "false",
         "state_invalid": "false",
@@ -181,13 +183,14 @@ class TestCubeOnPlateImpactReport(unittest.TestCase):
             self.assertTrue(html_path.exists())
             self.assertTrue((output_dir / report_tool.HYPOTHESIS_RECORD_NAME).exists())
             report = html_path.read_text(encoding="utf-8")
-            self.assertIn("H6: Cube-on-Plate Impact Ring-Down Contact Reduction", report)
-            self.assertIn("Figure 1: impact time history", report)
-            self.assertIn("Figure 2: peak response vs drop height", report)
-            self.assertIn("Figure 3: rebound and ring-down", report)
-            self.assertIn("Figure 4: contact reduction and validity", report)
+            self.assertIn("H6: Cube-on-Plate Impact", report)
+            self.assertIn("Figure 1", report)
+            self.assertIn("Figure 2", report)
+            self.assertIn("Figure 3", report)
+            self.assertIn("Figure 4", report)
+            self.assertIn("SDOF reference", report)
+            self.assertIn("steps/half-T", report)
             self.assertIn("Fz / mg", report)
-            self.assertIn("solver/log step", report)
             self.assertIn("reduce on", report)
             self.assertIn("Generated from", report)
 

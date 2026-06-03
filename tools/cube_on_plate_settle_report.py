@@ -51,7 +51,7 @@ SOLVER_SERIES = (
     ("solver_tx_Nm", "Tx [N m]", None),
     ("solver_ty_Nm", "Ty [N m]", None),
     ("solver_tz_Nm", "Tz [N m]", None),
-    ("solver_force_count", "force count", None),
+    ("rigid_contact_count", "contact count", None),
 )
 
 
@@ -316,7 +316,7 @@ def _raw_solver_y_range(
         return min(0.0, low), max(constants.cube_weight_N, high)
     if key in ("solver_tx_Nm", "solver_ty_Nm", "solver_tz_Nm"):
         return _symmetric_range(values, floor_abs=PRACTICAL_TORQUE_FLOOR_NM)
-    if key == "solver_force_count":
+    if key == "rigid_contact_count":
         finite = rc.finite(values)
         high = max([*finite, 1.0])
         return 0.0, 1.1 * high
@@ -335,34 +335,47 @@ def _time_series_figure(
 ) -> rc.Figure:
     """Build one raw solver output against time for one drop height."""
 
-    mode_rows = runs[height]
-    series = []
-    window_start: float | None = None
-    window_end: float | None = None
-    for mode in MODES:
-        rows = mode_rows.get(mode)
-        if not rows:
-            continue
-        times = _array(rows, "time_s")
-        _start_idx, start_time = _post_window_bounds(rows, window_fraction)
-        window_start = start_time if window_start is None else min(window_start, start_time)
-        window_end = times[-1] if window_end is None else max(window_end, times[-1])
-        series.append(rc.Series(times, _array(rows, key), _mode_label(mode), MODE_COLORS.get(mode, "#111827")))
+    # Overlay every drop height (color = height, dash = mode); opens on the
+    # representative height with the others a dropdown away.
+    heights = sorted(runs)
 
-    times_all = _series_values(runs, height, "time_s")
+    def _group(value: float) -> str:
+        return f"h = {1000.0 * value:.3g} mm"
+
+    default_group = _group(height)
+    series: list[rc.Series] = []
+    all_times: list[float] = []
+    all_ys: list[float] = []
+    for index, run_height in enumerate(heights):
+        mode_rows = runs[run_height]
+        group = _group(run_height)
+        color = rc.group_color(index)
+        for mode in MODES:
+            rows = mode_rows.get(mode)
+            if not rows:
+                continue
+            mode_dash = None if mode == "reduced" else "dash"
+            solo = rc.SOLO_MODE_COLORS[mode]
+            label = f"{group} · {_mode_label(mode)}"
+            times = _array(rows, "time_s")
+            ys = _array(rows, key)
+            all_times.extend(times)
+            all_ys.extend(ys)
+            series.append(rc.Series(times, ys, label, color, dash=mode_dash, group=group, solo_color=solo))
+
+    include = (0.0, constants.cube_weight_N) if reference == "weight" else (0.0,)
     hlines = ((constants.cube_weight_N, "m*g", "#111827"),) if reference == "weight" else ()
-    xbands: tuple[tuple[float, float, str, str], ...] = ()
-    if window_start is not None and window_end is not None:
-        xbands = ((window_start, window_end, "post-settle", "#e5e7eb"),)
     return rc.Figure(
         title=ylabel,
         xlabel="time [s]",
         ylabel=ylabel,
         series=series,
-        x_range=_padded_range(times_all, include=(0.0,), floor_span=0.01),
-        y_range=_raw_solver_y_range(runs, height, key, constants),
+        x_range=rc.padded_range(all_times, include=(0.0,)),
+        y_range=rc.padded_range(all_ys, include=include),
         hlines=hlines,
-        xbands=xbands,
+        selector="drop height",
+        selector_default=default_group,
+        height=360,
     )
 
 
@@ -692,11 +705,8 @@ def render_experiment_record(
         )
     else:
         result_items = (
-            "Both modes settle to the rigid-body equilibrium: vertical support matches the cube weight, with "
-            "negligible lateral force, net torque, drift, and tilt.",
-            "Reduce-on lands on the reference, while the dense reduce-off run over-supports slightly, so "
-            "reduction is at least as accurate as the dense contact set here.",
-            "Contact reduction holds this with far fewer solver contacts and no buffer overflow or reduction failure.",
+            "Both modes settle to equilibrium: Fz = weight, with negligible lateral force, torque, drift, and tilt.",
+            "Reduce-on matches the reference at least as well as dense, using far fewer contacts.",
         )
 
     sections = (
@@ -713,16 +723,15 @@ def render_experiment_record(
         (
             "Reference",
             (
-                "Rigid-body static equilibrium (no compliant or hydroelastic model needed): a body at rest on a "
-                "level plate carries Fz = m*g with zero lateral force, zero net torque, zero drift, and zero tilt.",
+                "Rigid-body static equilibrium: a body at rest on a level plate carries Fz = m*g with zero "
+                "lateral force, zero net torque, zero drift, and zero tilt.",
             ),
         ),
         (
             "Hypothesis",
             (
-                "Both modes should match the rigid-body equilibrium reference (Fz ~= m*g; lateral force, net "
-                "torque, drift, and tilt ~= 0) while contact reduction uses far fewer solver contact entries. "
-                "The dense reduce-off run is shown for comparison, not as ground truth.",
+                "Both modes should match the rigid-body equilibrium reference: Fz ~= m*g; lateral force, net "
+                "torque, drift, and tilt ~= 0.",
             ),
         ),
         (
@@ -736,11 +745,9 @@ def render_experiment_record(
         (
             "Measured quantities",
             (
-                "Solver force and torque.",
-                "Cube-plate gap and penetration depth.",
-                "Support-point offset inferred from Tx, Ty, and Fz.",
-                "Solver contact count and rigid contact count.",
-                "Final drift, final tilt, and contact-buffer max counts versus capacities.",
+                "Primary: solver force and torque on the cube.",
+                "Secondary: cube-plate gap and penetration depth, support-point offset from Tx, Ty, Fz, "
+                "solver and rigid contact count, and final drift, tilt, and contact-buffer use.",
             ),
         ),
         ("Result", result_items),
@@ -840,7 +847,6 @@ def render_html_report(
         [
             f"<h1>{rc.escape(PAGE_TITLE)}</h1>",
             render_experiment_record(metrics, constants),
-            render_summary_cards(metrics, constants),
             "<h2>Figures</h2>",
             f"<p>{window_note}</p>",
             rc.figure_tabs(panels),

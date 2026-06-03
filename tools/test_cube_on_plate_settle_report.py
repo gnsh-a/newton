@@ -216,9 +216,7 @@ class TestCubeOnPlateSettleReport(unittest.TestCase):
             self.assertIn("Figure 3: contact reduction and buffer sanity", report)
             self.assertIn("Geometric penetration", report)
             self.assertIn("Support-point offset", report)
-            self.assertIn("reduce-off contact buffers valid", report)
-            self.assertIn("reduce-on reduction buffers valid", report)
-            self.assertIn("force count", report)
+            self.assertIn("contact count", report)
 
 
 if __name__ == "__main__":

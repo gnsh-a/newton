@@ -26,7 +26,10 @@ TIMESERIES_COLUMNS = (
 SUMMARY_COLUMNS = (
     "mode",
     "buffer_overflow",
+    "state_invalid",
     "mu_sliding",
+    "cube_weight_N",
+    "analytic_tip_force_N",
     "event_type",
     "event_force_N",
     "event_force_over_ftip",
@@ -35,6 +38,10 @@ SUMMARY_COLUMNS = (
     "pitch_at_0p75_ftip_deg",
     "pitch_at_0p90_ftip_deg",
     "mean_solver_force_count",
+    "mean_rigid_contact_count",
+    "max_rigid_contact_count",
+    "rigid_contact_capacity",
+    "max_reduction_hashtable_failures",
 )
 
 
@@ -82,7 +89,10 @@ def _summary_row(*, mode: str, force_count: int) -> dict[str, str]:
     return {
         "mode": mode,
         "buffer_overflow": "false",
+        "state_invalid": "false",
         "mu_sliding": "0.7",
+        "cube_weight_N": "7.85",
+        "analytic_tip_force_N": "3.92",
         "event_type": "tip",
         "event_force_N": "4.2",
         "event_force_over_ftip": "1.07",
@@ -91,6 +101,10 @@ def _summary_row(*, mode: str, force_count: int) -> dict[str, str]:
         "pitch_at_0p75_ftip_deg": "4.0",
         "pitch_at_0p90_ftip_deg": "7.0",
         "mean_solver_force_count": str(force_count),
+        "mean_rigid_contact_count": str(force_count),
+        "max_rigid_contact_count": str(force_count),
+        "rigid_contact_capacity": "131072",
+        "max_reduction_hashtable_failures": "0",
     }
 
 
@@ -113,11 +127,13 @@ class TestCubeOnPlateTippingReport(unittest.TestCase):
             self.assertTrue(html_path.exists())
             self.assertTrue((output_dir / report_tool.HYPOTHESIS_RECORD_NAME).exists())
             report = html_path.read_text(encoding="utf-8")
-            self.assertIn("H3: Cube-on-Plate Tipping Contact Reduction", report)
+            self.assertIn("H3: Cube-on-Plate Tipping", report)
             self.assertIn("Figure 1", report)
             self.assertIn("Figure 2", report)
             self.assertIn("Figure 3", report)
             self.assertIn("center-pressure", report)
+            self.assertIn("static balance", report)
+            self.assertIn("tip onset", report)
             self.assertIn("reduce on", report)
             self.assertIn("Generated from", report)
 

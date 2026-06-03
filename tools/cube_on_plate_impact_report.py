@@ -27,7 +27,11 @@ HYPOTHESIS_RECORD_SOURCE = Path(__file__).resolve().parents[1] / "hypothesis" / 
 TIMESERIES_CSV = "impact_timeseries.csv"
 SUMMARY_CSV = "impact_summary.csv"
 
-PAGE_TITLE = "H6: Cube-on-Plate Impact Ring-Down Contact Reduction"
+PAGE_TITLE = "H6: Cube-on-Plate Impact"
+
+# Ideal lumped vertical contact stiffness for the flat cube-on-plate, K = g_eff * A
+# (VALIDATION.md "H6 stiffness levels", L1 ideal). Sets the damped-SDOF reference.
+K_IDEAL_N_PER_M = 4.0e7
 
 
 def load_timeseries(csv_dir: str | Path) -> dict[float, dict[str, list[dict[str, str]]]]:
@@ -82,6 +86,9 @@ def _impact_figure(
     x_include: tuple[float, ...] = (),
     y_include: tuple[float, ...] = (),
     y_floor_span: float = 0.0,
+    selector: str | None = None,
+    selector_default: str | None = None,
+    height: int = 300,
 ) -> rc.Figure:
     """Build a figure, computing axis ranges from the series and includes."""
 
@@ -94,6 +101,9 @@ def _impact_figure(
         series=series,
         x_range=rc.padded_range(all_x, include=x_include),
         y_range=rc.padded_range(all_y, include=y_include, floor_span=y_floor_span),
+        selector=selector,
+        selector_default=selector_default,
+        height=height,
     )
 
 
@@ -130,73 +140,158 @@ def _summary_series(
     return result
 
 
+def _sdof_arc(
+    *, impact_velocity: float, contact_time: float, weight: float, mass: float, n: int = 60
+) -> tuple[list[float], list[float], list[float], list[float]]:
+    """Undamped damped-SDOF reference for the contact half-cycle (needs only K, m, v_imp).
+
+    During contact a lumped mass on stiffness ``K_IDEAL`` follows
+    ``z(t) = (v/omega_n) sin(omega_n t)`` with ``omega_n = sqrt(K/m)``; the realized
+    (damped) response sits below this lossless envelope. Returns aligned
+    ``(t, Fz/weight, penetration[mm], vz)`` over one half period from first contact.
+    """
+
+    if not (math.isfinite(impact_velocity) and impact_velocity > 0.0 and mass > 0.0 and weight > 0.0):
+        return [], [], [], []
+    omega_n = math.sqrt(K_IDEAL_N_PER_M / mass)
+    half_period = math.pi / omega_n
+    ts, fz, pen, vz = [], [], [], []
+    for i in range(n + 1):
+        tau = half_period * i / n
+        depth = (impact_velocity / omega_n) * math.sin(omega_n * tau)
+        ts.append(contact_time + tau)
+        pen.append(1000.0 * depth)
+        fz.append(K_IDEAL_N_PER_M * depth / weight)
+        vz.append(-impact_velocity * math.cos(omega_n * tau))
+    return ts, fz, pen, vz
+
+
 def _time_history_figures(
     runs: dict[float, dict[str, list[dict[str, str]]]],
     summaries: dict[float, dict[str, dict[str, str]]],
     selected_height: float,
 ) -> str:
-    mode_rows = runs[selected_height]
     weight = next(
         (rc.as_float(row, "cube_weight_N") for row in summaries.get(selected_height, {}).values()),
         float("nan"),
     )
     if not math.isfinite(weight) or weight <= 0.0:
         weight = 1.0
+
+    def _group(height: float) -> str:
+        return f"h = {1000.0 * height:.3g} mm"
+
+    default_group = _group(selected_height)
     fz_series: list[rc.Series] = []
     pen_series: list[rc.Series] = []
     vz_series: list[rc.Series] = []
-    for mode in rc.MODES:
-        rows = mode_rows.get(mode, [])
-        xs = [rc.as_float(row, "time_s") for row in rows]
-        fz_series.append(
-            rc.Series(
-                xs=xs,
-                ys=[rc.as_float(row, "solver_fz_N") / weight for row in rows],
-                label=rc.MODE_LABELS[mode],
-                color=rc.MODE_COLORS[mode],
+    # Overlay every drop height (color = height, dash = mode); opens on the
+    # representative height with the others a dropdown away.
+    for index, height in enumerate(sorted(runs)):
+        mode_rows = runs[height]
+        group = _group(height)
+        color = rc.group_color(index)
+        for mode in rc.MODES:
+            rows = mode_rows.get(mode, [])
+            if not rows:
+                continue
+            mode_dash = None if mode == "reduced" else "dash"
+            solo = rc.SOLO_MODE_COLORS[mode]
+            label = f"{group} · {rc.MODE_LABELS[mode]}"
+            xs = [rc.as_float(row, "time_s") for row in rows]
+            fz_series.append(
+                rc.Series(
+                    xs,
+                    [rc.as_float(row, "solver_fz_N") / weight for row in rows],
+                    label,
+                    color,
+                    dash=mode_dash,
+                    group=group,
+                    solo_color=solo,
+                )
             )
-        )
-        pen_series.append(
-            rc.Series(
-                xs=xs,
-                ys=[1000.0 * rc.as_float(row, "cube_penetration_depth_m") for row in rows],
-                label=rc.MODE_LABELS[mode],
-                color=rc.MODE_COLORS[mode],
+            pen_series.append(
+                rc.Series(
+                    xs,
+                    [1000.0 * rc.as_float(row, "cube_penetration_depth_m") for row in rows],
+                    label,
+                    color,
+                    dash=mode_dash,
+                    group=group,
+                    solo_color=solo,
+                )
             )
-        )
-        vz_series.append(
-            rc.Series(
-                xs=xs,
-                ys=[rc.as_float(row, "cube_vz_m_per_s") for row in rows],
-                label=rc.MODE_LABELS[mode],
-                color=rc.MODE_COLORS[mode],
+            vz_series.append(
+                rc.Series(
+                    xs,
+                    [rc.as_float(row, "cube_vz_m_per_s") for row in rows],
+                    label,
+                    color,
+                    dash=mode_dash,
+                    group=group,
+                    solo_color=solo,
+                )
             )
+        # Undamped SDOF reference arc for this height (color-matched, dotted).
+        summary_ref = summaries.get(height, {}).get("unreduced") or next(iter(summaries.get(height, {}).values()), None)
+        if summary_ref is not None:
+            arc_t, arc_fz, arc_pen, arc_vz = _sdof_arc(
+                impact_velocity=rc.as_float(summary_ref, "impact_velocity_m_per_s"),
+                contact_time=rc.as_float(summary_ref, "first_contact_time_s"),
+                weight=weight,
+                mass=rc.as_float(summary_ref, "cube_mass_kg"),
+            )
+            if arc_t:
+                ref = rc.REFERENCE_COLOR
+                label = f"{group} · SDOF reference"
+                fz_series.append(rc.Series(arc_t, arc_fz, label, color, dash="dot", group=group, solo_color=ref))
+                pen_series.append(rc.Series(arc_t, arc_pen, label, color, dash="dot", group=group, solo_color=ref))
+                vz_series.append(rc.Series(arc_t, arc_vz, label, color, dash="dot", group=group, solo_color=ref))
+
+    def _hist(title: str, ylabel: str, series: list[rc.Series]) -> rc.Figure:
+        return _impact_figure(
+            title=title,
+            xlabel="time [s]",
+            ylabel=ylabel,
+            series=series,
+            y_include=(0.0,),
+            selector="drop height",
+            selector_default=default_group,
+            height=360,
         )
+
     return rc.figure_grid(
         [
-            _impact_figure(
-                title=f"Solver Fz history at h={1000.0 * selected_height:.3g} mm",
-                xlabel="time [s]",
-                ylabel="Fz / mg",
-                series=fz_series,
-                y_include=(0.0,),
-            ),
-            _impact_figure(
-                title="Compression history",
-                xlabel="time [s]",
-                ylabel="penetration [mm]",
-                series=pen_series,
-                y_include=(0.0,),
-            ),
-            _impact_figure(
-                title="Vertical velocity history",
-                xlabel="time [s]",
-                ylabel="vz [m/s]",
-                series=vz_series,
-                y_include=(0.0,),
-            ),
+            _hist("Solver Fz history", "Fz / mg", fz_series),
+            _hist("Compression history", "penetration [mm]", pen_series),
+            _hist("Vertical velocity history", "vz [m/s]", vz_series),
         ]
     )
+
+
+def _sdof_reference_series(summaries: dict[float, dict[str, dict[str, str]]], *, kind: str) -> rc.Series:
+    """SDOF undamped peak reference over drop height (uses only K_IDEAL, m, measured v_imp).
+
+    ``kind="peak_over_weight"`` -> F_peak/mg = v_imp*sqrt(K*m)/weight;
+    ``kind="depth_mm"`` -> depth_max = v_imp*sqrt(m/K) in mm.
+    """
+    xs: list[float] = []
+    ys: list[float] = []
+    for height, mode_rows in summaries.items():
+        row = mode_rows.get("unreduced") or next(iter(mode_rows.values()), None)
+        if row is None:
+            continue
+        v = rc.as_float(row, "impact_velocity_m_per_s")
+        m = rc.as_float(row, "cube_mass_kg")
+        weight = rc.as_float(row, "cube_weight_N")
+        if not (math.isfinite(v) and v > 0.0 and m > 0.0 and weight > 0.0):
+            continue
+        xs.append(1000.0 * height)
+        if kind == "peak_over_weight":
+            ys.append(v * math.sqrt(K_IDEAL_N_PER_M * m) / weight)
+        else:
+            ys.append(1000.0 * v * math.sqrt(m / K_IDEAL_N_PER_M))
+    return rc.Series(xs, ys, "SDOF reference", rc.REFERENCE_COLOR, draw_marker=False, dash="5 4")
 
 
 def _peak_response_figures(summaries: dict[float, dict[str, dict[str, str]]]) -> str:
@@ -206,14 +301,20 @@ def _peak_response_figures(summaries: dict[float, dict[str, dict[str, str]]]) ->
                 title="Peak solver force",
                 xlabel="drop height [mm]",
                 ylabel="peak Fz / mg",
-                series=_summary_series(summaries, "peak_solver_fz_over_weight", scale_x=1000.0),
+                series=[
+                    _sdof_reference_series(summaries, kind="peak_over_weight"),
+                    *_summary_series(summaries, "peak_solver_fz_over_weight", scale_x=1000.0),
+                ],
                 y_include=(0.0,),
             ),
             _impact_figure(
                 title="Maximum compression",
                 xlabel="drop height [mm]",
                 ylabel="penetration [mm]",
-                series=_summary_series(summaries, "max_penetration_depth_m", scale_x=1000.0, scale_y=1000.0),
+                series=[
+                    _sdof_reference_series(summaries, kind="depth_mm"),
+                    *_summary_series(summaries, "max_penetration_depth_m", scale_x=1000.0, scale_y=1000.0),
+                ],
                 y_include=(0.0,),
             ),
             _impact_figure(
@@ -255,75 +356,22 @@ def _ring_down_figures(summaries: dict[float, dict[str, dict[str, str]]]) -> str
     )
 
 
-def _contact_validity_figures(summaries: dict[float, dict[str, dict[str, str]]]) -> str:
-    contact_series = _summary_series(summaries, "mean_solver_force_count", scale_x=1000.0)
-    scatter_series: list[rc.Series] = []
-    for mode in rc.MODES:
-        xs: list[float] = []
-        ys: list[float] = []
-        for mode_rows in summaries.values():
-            row = mode_rows.get(mode)
-            if row is None:
-                continue
-            xs.append(rc.as_float(row, "mean_solver_force_count"))
-            ys.append(rc.as_float(row, "peak_solver_fz_over_weight"))
-        scatter_series.append(
-            rc.Series(
-                xs=xs, ys=ys, label=rc.MODE_LABELS[mode], color=rc.MODE_COLORS[mode], draw_line=False, draw_marker=True
-            )
-        )
-    validity_series: list[rc.Series] = []
-    for mode in rc.MODES:
-        xs = []
-        ys = []
-        for height, mode_rows in summaries.items():
-            row = mode_rows.get(mode)
-            if row is None:
-                continue
-            xs.append(1000.0 * height)
-            ys.append(1.0 if rc.as_bool(row["valid_run"]) else 0.0)
-        validity_series.append(
-            rc.Series(
-                xs=xs, ys=ys, label=rc.MODE_LABELS[mode], color=rc.MODE_COLORS[mode], draw_line=False, draw_marker=True
-            )
-        )
-    return rc.figure_grid(
-        [
-            _impact_figure(
-                title="Mean solver contact count",
-                xlabel="drop height [mm]",
-                ylabel="contacts",
-                series=contact_series,
-                y_include=(0.0,),
-            ),
-            _impact_figure(
-                title="Peak force vs contact count",
-                xlabel="mean solver contacts",
-                ylabel="peak Fz / mg",
-                series=scatter_series,
-                x_include=(0.0,),
-                y_include=(0.0,),
-            ),
-            _impact_figure(
-                title="Validity flag",
-                xlabel="drop height [mm]",
-                ylabel="valid run",
-                series=validity_series,
-                y_include=(0.0, 1.0),
-                y_floor_span=1.0,
-            ),
-        ]
-    )
+def _checks_table(summaries: dict[float, dict[str, dict[str, str]]]) -> str:
+    """Figure 4: peak/penetration, contact counts, the dt-floor gate, and validity as a table.
 
+    The dt-floor gate reports steps per contact half-period ``pi*sqrt(m/K_IDEAL)``; below a
+    few steps the impact is dt-limited, not physics-limited, so the dynamic result is
+    inconclusive regardless of the buffer-based ``valid`` flag.
+    """
 
-def _summary_table(summaries: dict[float, dict[str, dict[str, str]]]) -> str:
     headers = [
         "height [mm]",
         "mode",
-        "peak Fz / mg",
-        "max penetration [mm]",
-        "rebound ratio",
-        "mean solver contacts",
+        "peak Fz/mg",
+        "max pen [mm]",
+        "mean contacts",
+        "max rigid / cap",
+        "steps/half-T",
         "valid",
     ]
     rows = []
@@ -332,15 +380,23 @@ def _summary_table(summaries: dict[float, dict[str, dict[str, str]]]) -> str:
             row = mode_rows.get(mode)
             if row is None:
                 continue
+            mass = rc.as_float(row, "cube_mass_kg")
+            step_dt = rc.as_float(row, "step_dt_s")
+            half_period = math.pi * math.sqrt(mass / K_IDEAL_N_PER_M) if mass > 0.0 else float("nan")
+            steps = half_period / step_dt if step_dt > 0.0 and math.isfinite(half_period) else float("nan")
+            dt_ok = "ok" if math.isfinite(steps) and steps >= 5.0 else "dt-limited"
+            max_rigid = rc.format_number(rc.as_float(row, "max_rigid_contact_count"), precision=4)
+            cap = rc.format_number(rc.as_float(row, "rigid_contact_capacity"), precision=4)
             rows.append(
                 [
                     f"{1000.0 * height:.3g}",
                     rc.MODE_LABELS[mode],
                     rc.format_number(rc.as_float(row, "peak_solver_fz_over_weight")),
                     f"{1000.0 * rc.as_float(row, 'max_penetration_depth_m'):.4g}",
-                    rc.format_number(rc.as_float(row, "rebound_velocity_ratio")),
-                    rc.format_number(rc.as_float(row, "mean_solver_force_count")),
-                    row["valid_run"],
+                    rc.format_number(rc.as_float(row, "mean_solver_force_count"), precision=4),
+                    f"{max_rigid} / {cap}",
+                    f"{rc.format_number(steps)} ({dt_ok})",
+                    row.get("valid_run", "n/a"),
                 ]
             )
     return rc.data_table(headers, rows)
@@ -401,54 +457,57 @@ def _build_html(
     panels = [
         rc.TabPanel(
             "Figure 1",
-            "<h2>Figure 1: impact time history</h2>\n"
-            f"<p>Selected height: {height_mm:.4g} mm. These curves show the transient that static settle does not "
-            "test.</p>\n" + _time_history_figures(runs, summaries, selected_height),
+            "<p>Figure 1: primary, directly-measured impact transient versus time &mdash; solver Fz/mg, compression, "
+            f"and vertical velocity (selected height {height_mm:.4g} mm), each against the undamped SDOF reference "
+            "arc.</p>\n" + _time_history_figures(runs, summaries, selected_height),
         ),
         rc.TabPanel(
             "Figure 2",
-            "<h2>Figure 2: peak response vs drop height</h2>\n"
-            "<p>Drop-height plots use points only because each height is a separate experiment condition.</p>\n"
-            + _peak_response_figures(summaries),
+            "<p>Figure 2: peak response vs drop height &mdash; peak force and maximum compression against the SDOF "
+            "targets <code>F_peak = v_imp*sqrt(K*m)</code> and <code>depth_max = v_imp*sqrt(m/K)</code>, plus time to "
+            "peak.</p>\n" + _peak_response_figures(summaries),
         ),
         rc.TabPanel(
             "Figure 3",
-            "<h2>Figure 3: rebound and ring-down</h2>\n"
-            "<p>These metrics test whether the impact returns smoothly to static support after first contact.</p>\n"
-            + _ring_down_figures(summaries),
+            "<p>Figure 3: rebound and ring-down &mdash; whether the impact returns smoothly to static support after "
+            "first contact.</p>\n" + _ring_down_figures(summaries),
         ),
         rc.TabPanel(
             "Figure 4",
-            "<h2>Figure 4: contact reduction and validity</h2>\n"
-            "<p>This figure connects the transient response to the number of solver contacts used by each mode.</p>\n"
-            + _contact_validity_figures(summaries),
+            "<p>Figure 4: peak/penetration, contact counts, the dt-floor gate (steps per contact half-period), and "
+            "validity. Fewer than ~5 steps per half-period means the impact is dt-limited and inconclusive.</p>\n"
+            + _checks_table(summaries),
         ),
     ]
 
     body = "\n".join(
         [
             f"<h1>{rc.escape(PAGE_TITLE)}</h1>",
-            '<p class="lede">This report checks whether contact reduction preserves vertical impact dynamics, not '
-            "just the final static support force. The setup drops the H1 cube onto the H1 plate and compares solver "
-            "force history, compression, rebound, and settling.</p>",
-            "<h2>Hypothesis</h2>",
-            "<p>Reduce on may preserve the settled resultant while changing transient compliance. A few reduced "
-            "contacts can carry the same final support load as dense contact, but peak force and ring-down depend on "
-            "how stiffness and damping are distributed during impact.</p>",
-            "<h2>Measured quantities</h2>",
+            '<p class="lede">Does contact reduction preserve vertical impact dynamics, not just the static support '
+            "force? The H1 cube is dropped onto the H1 plate; reduce off vs reduce on are compared in force history, "
+            "compression, rebound, and settling.</p>",
+            "<h2>Reference</h2>",
+            "<p>Damped single-DOF oscillator (VALIDATION.md): with lumped stiffness "
+            f"<code>K = {rc.format_number(K_IDEAL_N_PER_M)} N/m</code> and mass m, "
+            "<code>F_peak = v_imp*sqrt(K*m)</code>, <code>depth_max = v_imp*sqrt(m/K)</code>. The contact half-period "
+            "is <code>pi*sqrt(m/K) ~ 0.44 ms</code>, so the step must resolve it; otherwise the impact is dt-limited "
+            "and the dynamic comparison is inconclusive.</p>",
+            "<h2>Measured Quantities</h2>",
+            "<p>Primary (Figure 1, directly measured):</p>",
             "<ul>",
-            "<li>Solver force and torque on the cube.</li>",
-            "<li>Penetration depth, vertical velocity, final tilt, and drift.</li>",
-            "<li>Peak solver force, time to peak, rebound ratio, settle time, and force RMS.</li>",
-            "<li>Solver contact count and contact-buffer validity.</li>",
+            "<li>Solver vertical force <code>Fz</code>, penetration depth, and vertical velocity.</li>",
             "</ul>",
-            "<h2>Current result</h2>",
+            "<p>Secondary (derived / checks):</p>",
+            "<ul>",
+            "<li>Peak force and maximum compression vs the SDOF targets; time to peak.</li>",
+            "<li>Rebound ratio, settle time, post-settle force RMS.</li>",
+            "<li>Solver, rigid, and face contact counts; dt-floor gate and buffer validity.</li>",
+            "</ul>",
+            "<h2>Results</h2>",
             _run_settings_text(summaries),
             _result_bullets(summaries),
             "<h2>Figures</h2>",
             rc.figure_tabs(panels),
-            "<h2>Summary Table</h2>",
-            _summary_table(summaries),
             f'<p class="meta">Generated from <code>{rc.escape(csv_dir / TIMESERIES_CSV)}</code> and '
             f"<code>{rc.escape(csv_dir / SUMMARY_CSV)}</code>.</p>",
         ]

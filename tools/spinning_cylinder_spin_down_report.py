@@ -35,7 +35,7 @@ DEFAULT_SDF_SWEEP_DIRS = (
     (48.0, VARIATIONS_DIR / "sdf48"),
 )
 
-PAGE_TITLE = "H4: Spinning Cylinder Yaw-Torque Contact Reduction"
+PAGE_TITLE = "H4: Spinning Cylinder Spin-Down"
 OMEGA_COLORS = ("#2563eb", "#059669", "#f97316", "#7c3aed", "#dc2626", "#0891b2")
 
 
@@ -158,112 +158,144 @@ def _figure_spin_history(
     *,
     selected_omega: float,
 ) -> str:
-    rows_by_mode = runs[selected_omega]
-    reference_summary = summaries[selected_omega].get("unreduced") or next(iter(summaries[selected_omega].values()))
-    reference_times: list[float] = []
-    for mode in rc.MODES:
-        if mode in rows_by_mode:
-            reference_times = [rc.as_float(row, "time_s") for row in rows_by_mode[mode]]
-            break
-
-    omega_series: list[rc.Series] = [
-        rc.Series(
-            reference_times,
-            _reference_omega_series(reference_summary, reference_times),
-            "uniform-pressure reference",
-            rc.REFERENCE_COLOR,
-            dash="5 4",
-        )
-    ]
-    torque_series: list[rc.Series] = [
-        rc.Series(
-            reference_times,
-            [1000.0 * rc.as_float(reference_summary, "expected_uniform_torque_z_Nm") for _ in reference_times],
-            "uniform-pressure reference",
-            rc.REFERENCE_COLOR,
-            dash="5 4",
-        )
-    ]
-
-    for mode in rc.MODES:
-        rows = rows_by_mode.get(mode)
-        if not rows:
-            continue
-        times = [rc.as_float(row, "time_s") for row in rows]
+    # Overlay every omega0 (color = omega0, dash = mode); opens on the
+    # representative omega0 with the others a dropdown away.
+    omegas = sorted(runs)
+    default_group = f"omega0 = {rc.format_number(selected_omega)} rad/s"
+    omega_series: list[rc.Series] = []
+    torque_series: list[rc.Series] = []
+    all_times: list[float] = []
+    for index, omega in enumerate(omegas):
+        rows_by_mode = runs[omega]
+        group = f"omega0 = {rc.format_number(omega)} rad/s"
+        color = rc.group_color(index)
+        reference_summary = summaries[omega].get("unreduced") or next(iter(summaries[omega].values()))
+        reference_times: list[float] = []
+        for mode in rc.MODES:
+            if mode in rows_by_mode:
+                reference_times = [rc.as_float(row, "time_s") for row in rows_by_mode[mode]]
+                break
+        all_times.extend(reference_times)
         omega_series.append(
             rc.Series(
-                times,
-                [rc.as_float(row, "omega_over_omega0") for row in rows],
-                rc.MODE_LABELS[mode],
-                rc.MODE_COLORS[mode],
+                reference_times,
+                _reference_omega_series(reference_summary, reference_times),
+                f"{group} · uniform-pressure reference",
+                color,
+                dash="dot",
+                group=group,
+                solo_color=rc.REFERENCE_COLOR,
             )
         )
         torque_series.append(
             rc.Series(
-                times,
-                [1000.0 * rc.as_float(row, "solver_tz_Nm") for row in rows],
-                rc.MODE_LABELS[mode],
-                rc.MODE_COLORS[mode],
+                reference_times,
+                [1000.0 * rc.as_float(reference_summary, "expected_uniform_torque_z_Nm") for _ in reference_times],
+                f"{group} · uniform-pressure reference",
+                color,
+                dash="dot",
+                group=group,
+                solo_color=rc.REFERENCE_COLOR,
             )
         )
+        for mode in rc.MODES:
+            rows = rows_by_mode.get(mode)
+            if not rows:
+                continue
+            mode_dash = None if mode == "reduced" else "dash"
+            solo = rc.SOLO_MODE_COLORS[mode]
+            label = f"{group} · {rc.MODE_LABELS[mode]}"
+            times = [rc.as_float(row, "time_s") for row in rows]
+            omega_series.append(
+                rc.Series(
+                    times,
+                    [rc.as_float(row, "omega_over_omega0") for row in rows],
+                    label,
+                    color,
+                    dash=mode_dash,
+                    group=group,
+                    solo_color=solo,
+                )
+            )
+            torque_series.append(
+                rc.Series(
+                    times,
+                    [1000.0 * rc.as_float(row, "solver_tz_Nm") for row in rows],
+                    label,
+                    color,
+                    dash=mode_dash,
+                    group=group,
+                    solo_color=solo,
+                )
+            )
 
-    all_times = [x for series in omega_series for x in series.xs]
-    all_torques = [y for series in torque_series for y in series.ys]
+    time_range = rc.padded_range(all_times, include=(0.0,))
+
+    def _hist(title: str, ylabel: str, series: list[rc.Series], y_range: tuple[float, float]) -> rc.Figure:
+        return rc.Figure(
+            title=title,
+            xlabel="time [s]",
+            ylabel=ylabel,
+            series=series,
+            x_range=time_range,
+            y_range=y_range,
+            selector="omega0",
+            selector_default=default_group,
+            height=360,
+        )
+
     return rc.figure_grid(
         [
-            rc.Figure(
-                title=f"Spin decay, omega0 = {rc.format_number(selected_omega)} rad/s",
-                xlabel="time [s]",
-                ylabel="omega / omega0",
-                series=omega_series,
-                x_range=rc.padded_range(all_times, include=(0.0,), floor_span=0.05),
-                y_range=rc.padded_range(
-                    [y for series in omega_series for y in series.ys], include=(0.0, 1.0), floor_span=0.2
-                ),
+            _hist(
+                "Spin decay",
+                "omega / omega0",
+                omega_series,
+                rc.padded_range([y for series in omega_series for y in series.ys], include=(0.0, 1.0)),
             ),
-            rc.Figure(
-                title="Solver yaw torque",
-                xlabel="time [s]",
-                ylabel="Tz [mN m]",
-                series=torque_series,
-                x_range=rc.padded_range(all_times, include=(0.0,), floor_span=0.05),
-                y_range=rc.padded_range(all_torques, include=(0.0,), floor_span=0.5),
+            _hist(
+                "Solver yaw torque",
+                "Tz [mN m]",
+                torque_series,
+                rc.padded_range([y for series in torque_series for y in series.ys], include=(0.0,)),
             ),
         ]
     )
 
 
-def _figure_contact_history(
-    runs: dict[float, dict[str, list[dict[str, str]]]],
-    *,
-    selected_omega: float,
-) -> str:
-    rows_by_mode = runs[selected_omega]
-    contact_series = rc.mode_series(rows_by_mode, x_key="time_s", y_key="solver_force_count")
-    fz_series = rc.mode_series(rows_by_mode, x_key="time_s", y_key="solver_fz_N")
-    all_times = [x for series in contact_series for x in series.xs]
-    all_contacts = [y for series in contact_series for y in series.ys]
-    all_fz = [y for series in fz_series for y in series.ys]
-    return rc.figure_grid(
-        [
-            rc.Figure(
-                title="Solver contact count",
-                xlabel="time [s]",
-                ylabel="contacts",
-                series=contact_series,
-                x_range=rc.padded_range(all_times, include=(0.0,), floor_span=0.05),
-                y_range=rc.padded_range(all_contacts, include=(0.0,), floor_span=50.0),
-            ),
-            rc.Figure(
-                title="Solver vertical support force",
-                xlabel="time [s]",
-                ylabel="Fz [N]",
-                series=fz_series,
-                x_range=rc.padded_range(all_times, include=(0.0,), floor_span=0.05),
-                y_range=rc.padded_range(all_fz, include=(0.0,), floor_span=0.05),
-            ),
-        ]
-    )
+def _checks_table(summaries: dict[float, dict[str, dict[str, str]]]) -> str:
+    """Figure 3: contact counts, buffer utilization, and the drift gate as a table."""
+
+    headers = [
+        "omega0 [rad/s]",
+        "mode",
+        "mean contacts",
+        "max rigid / cap",
+        "overflow",
+        "hash fail",
+        "drift [mm]",
+        "stopped",
+    ]
+    rows = []
+    for omega0 in sorted(summaries):
+        for mode in rc.MODES:
+            row = summaries[omega0].get(mode)
+            if row is None:
+                continue
+            max_rigid = rc.format_number(rc.as_float(row, "max_rigid_contact_count"), precision=4)
+            cap = rc.format_number(rc.as_float(row, "rigid_contact_capacity"), precision=4)
+            rows.append(
+                [
+                    rc.format_number(omega0),
+                    rc.MODE_LABELS.get(mode, mode),
+                    rc.format_number(rc.as_float(row, "mean_solver_force_count"), precision=4),
+                    f"{max_rigid} / {cap}",
+                    row.get("buffer_overflow", "n/a"),
+                    rc.format_number(rc.as_float(row, "max_reduction_hashtable_failures"), precision=4),
+                    rc.format_number(1000.0 * rc.as_float(row, "final_lateral_drift_m")),
+                    row.get("stopped", "n/a"),
+                ]
+            )
+    return rc.data_table(headers, rows)
 
 
 def _summary_series(
@@ -294,7 +326,9 @@ def _reference_summary_series(
     return rc.Series(xs, ys, label, rc.REFERENCE_COLOR, draw_marker=True, dash="5 4")
 
 
-def _figure_sweep_summary(summaries: dict[float, dict[str, dict[str, str]]]) -> str:
+def _figure_additional(summaries: dict[float, dict[str, dict[str, str]]]) -> str:
+    """Figure 2: derived scalars vs yaw rate (stop time, mean torque) and the drift residual."""
+
     omegas = sorted(summaries)
     x_range = rc.padded_range(omegas, include=(0.0,), floor_span=5.0)
     x_ticks = omegas if len(omegas) <= 6 else None
@@ -309,17 +343,10 @@ def _figure_sweep_summary(summaries: dict[float, dict[str, dict[str, str]]]) -> 
         _summary_series(summaries, mode="unreduced", key="mean_solver_tz_active_Nm", scale=1000.0),
         _summary_series(summaries, mode="reduced", key="mean_solver_tz_active_Nm", scale=1000.0),
     ]
-    ratio_xs = []
-    ratio_ys = []
-    for omega0 in omegas:
-        off = summaries[omega0].get("unreduced")
-        on = summaries[omega0].get("reduced")
-        if off is None or on is None:
-            continue
-        off_count = rc.as_float(off, "mean_solver_force_count")
-        ratio_xs.append(omega0)
-        ratio_ys.append(rc.as_float(on, "mean_solver_force_count") / off_count if off_count > 0.0 else float("nan"))
-    ratio_series = [rc.Series(ratio_xs, ratio_ys, "reduce on / reduce off", "#059669", draw_marker=True)]
+    drift_series = [
+        _summary_series(summaries, mode="unreduced", key="final_lateral_drift_m", scale=1000.0),
+        _summary_series(summaries, mode="reduced", key="final_lateral_drift_m", scale=1000.0),
+    ]
 
     return rc.figure_grid(
         [
@@ -346,13 +373,16 @@ def _figure_sweep_summary(summaries: dict[float, dict[str, dict[str, str]]]) -> 
                 x_ticks=x_ticks,
             ),
             rc.Figure(
-                title="Contact count ratio",
+                title="Final lateral drift",
                 xlabel="initial yaw rate [rad/s]",
-                ylabel="ratio",
-                series=ratio_series,
+                ylabel="drift [mm]",
+                series=drift_series,
                 x_range=x_range,
-                y_range=rc.padded_range(ratio_ys, include=(0.0,), floor_span=0.05),
+                y_range=rc.padded_range(
+                    [y for series in drift_series for y in series.ys], include=(0.0,), floor_span=1.0
+                ),
                 x_ticks=x_ticks,
+                hlines=((0.0, "uniform: no drift (eps=0)", rc.REFERENCE_COLOR),),
             ),
         ]
     )
@@ -385,6 +415,7 @@ def _figure_sdf_sweep(sdf_sweep: list[SdfSweepRow]) -> str:
 
     for omega0 in omega_values:
         color = _omega_color(omega0, omega_values)
+        group = f"omega0 = {rc.format_number(omega0)} rad/s"
         omega_rows = by_omega[omega0]
         off_stop: list[float] = []
         on_stop: list[float] = []
@@ -427,24 +458,44 @@ def _figure_sdf_sweep(sdf_sweep: list[SdfSweepRow]) -> str:
                 else float("nan")
             )
 
+        off_solo = rc.SOLO_MODE_COLORS["unreduced"]
+        on_solo = rc.SOLO_MODE_COLORS["reduced"]
         stop_series.extend(
             [
-                rc.Series(sdf_values, off_stop, f"omega0 {rc.format_number(omega0)} off", color, draw_marker=True),
                 rc.Series(
-                    sdf_values, on_stop, f"omega0 {rc.format_number(omega0)} on", color, draw_marker=True, dash="4 4"
+                    sdf_values, off_stop, f"{group} off", color, draw_marker=True, group=group, solo_color=off_solo
+                ),
+                rc.Series(
+                    sdf_values,
+                    on_stop,
+                    f"{group} on",
+                    color,
+                    draw_marker=True,
+                    dash="4 4",
+                    group=group,
+                    solo_color=on_solo,
                 ),
             ]
         )
         torque_series.extend(
             [
-                rc.Series(sdf_values, off_torque, f"omega0 {rc.format_number(omega0)} off", color, draw_marker=True),
                 rc.Series(
-                    sdf_values, on_torque, f"omega0 {rc.format_number(omega0)} on", color, draw_marker=True, dash="4 4"
+                    sdf_values, off_torque, f"{group} off", color, draw_marker=True, group=group, solo_color=off_solo
+                ),
+                rc.Series(
+                    sdf_values,
+                    on_torque,
+                    f"{group} on",
+                    color,
+                    draw_marker=True,
+                    dash="4 4",
+                    group=group,
+                    solo_color=on_solo,
                 ),
             ]
         )
         ratio_series.append(
-            rc.Series(sdf_values, ratios, f"omega0 {rc.format_number(omega0)}", color, draw_marker=True)
+            rc.Series(sdf_values, ratios, group, color, draw_marker=True, group=group, solo_color=on_solo)
         )
 
     all_stop = [y for series in stop_series for y in series.ys]
@@ -460,6 +511,8 @@ def _figure_sdf_sweep(sdf_sweep: list[SdfSweepRow]) -> str:
                 x_range=rc.padded_range(sdf_values, floor_span=4.0),
                 y_range=rc.padded_range(all_stop, include=(0.0,), floor_span=0.1),
                 x_ticks=sdf_values,
+                selector="omega0",
+                height=360,
             ),
             rc.Figure(
                 title="Mean yaw-torque error vs SDF resolution",
@@ -469,6 +522,8 @@ def _figure_sdf_sweep(sdf_sweep: list[SdfSweepRow]) -> str:
                 x_range=rc.padded_range(sdf_values, floor_span=4.0),
                 y_range=rc.padded_range(all_torque, include=(0.0,), floor_span=0.2),
                 x_ticks=sdf_values,
+                selector="omega0",
+                height=360,
             ),
             rc.Figure(
                 title="Contact-count ratio vs SDF resolution",
@@ -478,6 +533,8 @@ def _figure_sdf_sweep(sdf_sweep: list[SdfSweepRow]) -> str:
                 x_range=rc.padded_range(sdf_values, floor_span=4.0),
                 y_range=rc.padded_range(all_ratios, include=(0.0,), floor_span=0.02),
                 x_ticks=sdf_values,
+                selector="omega0",
+                height=360,
             ),
         ]
     )
@@ -508,12 +565,11 @@ def _result_bullets(summaries: dict[float, dict[str, dict[str, str]]]) -> list[s
         on_count = rc.as_float(on, "mean_solver_force_count")
         ratio = on_count / off_count if off_count > 0.0 else float("nan")
         bullets.append(
-            "omega0 = "
-            f"{rc.format_number(omega0)} rad/s: stop time reference/off/on = "
-            f"{rc.format_number(expected_stop)} / {rc.format_number(off_stop)} / {rc.format_number(on_stop)} s; "
-            f"mean |Tz| reference/off/on = {rc.format_number(1000.0 * expected_torque)} / "
-            f"{rc.format_number(1000.0 * off_torque)} / {rc.format_number(1000.0 * on_torque)} mN m; "
-            f"contact ratio = {rc.format_percent(ratio)}."
+            f"omega0 {rc.format_number(omega0)} rad/s: stop ref/off/on = "
+            f"{rc.format_number(expected_stop)}/{rc.format_number(off_stop)}/{rc.format_number(on_stop)} s; "
+            f"|Tz| ref/off/on = {rc.format_number(1000.0 * expected_torque)}/"
+            f"{rc.format_number(1000.0 * off_torque)}/{rc.format_number(1000.0 * on_torque)} mN m; "
+            f"contacts {rc.format_percent(ratio)}."
         )
 
     return bullets
@@ -579,28 +635,28 @@ def _build_html(
     panels = [
         rc.TabPanel(
             "Figure 1",
-            "<p>Figure 1 checks the primary physics: spin decay and yaw torque versus time. If the reduced contacts "
-            "lose patch lever arm, this is where the mismatch should appear first.</p>\n"
-            + _figure_spin_history(runs, summaries, selected_omega=selected_omega),
+            "<p>Figure 1: primary, directly-measured quantities versus time &mdash; spin decay (omega/omega0) and "
+            "solver yaw torque, each against the uniform-pressure disk reference. A lost patch lever arm would show "
+            "here first.</p>\n" + _figure_spin_history(runs, summaries, selected_omega=selected_omega),
         ),
         rc.TabPanel(
             "Figure 2",
-            "<p>Figure 2 checks whether the contact set is loaded and whether reduction actually changes the solver "
-            "contact count while maintaining vertical support.</p>\n"
-            + _figure_contact_history(runs, selected_omega=selected_omega),
+            "<p>Figure 2: derived scalars versus initial yaw rate &mdash; spin stop time and mean active yaw torque "
+            "against the uniform-pressure reference, plus final lateral drift (the eps=0 instability gate, expected "
+            "near zero).</p>\n" + _figure_additional(summaries),
         ),
         rc.TabPanel(
             "Figure 3",
-            "<p>Figure 3 summarizes stop time, mean active yaw torque, and contact-count ratio across the available "
-            "initial yaw-rate sweep.</p>\n" + _figure_sweep_summary(summaries),
+            "<p>Figure 3: contact counts, buffer utilization, the drift gate, and stop validity.</p>\n"
+            + _checks_table(summaries),
         ),
     ]
     if figure_4:
         panels.append(
             rc.TabPanel(
                 "Figure 4",
-                "<p>Figure 4 compares SDF resolution across the completed yaw-rate sweep. SDF 16 is retained as a "
-                "failure case; SDF 64 is intentionally not included.</p>\n" + figure_4,
+                "<p>Figure 4: SDF-resolution probe across the yaw-rate sweep. SDF 16 is kept as a failure case; "
+                "SDF 64 is omitted.</p>\n" + figure_4,
             )
         )
 
@@ -608,22 +664,23 @@ def _build_html(
     body = "\n".join(
         [
             f"<h1>{rc.escape(PAGE_TITLE)}</h1>",
-            "<p>This experiment tests whether contact reduction preserves the yaw-friction torque of a flat spinning "
-            "cylinder on a flat hydroelastic plate. Initial linear velocity is zero, and torsional and rolling "
-            "friction are zero, so the measured spin decay must come from tangential solver forces distributed across "
-            "the contact patch.</p>",
-            "<p>The comparison is reduce off versus reduce on, with pre-prune off in both modes. The reference is the "
-            "uniform-pressure disk estimate: <code>Tz = -(2/3) mu m g R sign(omega)</code> and "
-            "<code>t_stop = (3/4) omega0 R / (mu g)</code>.</p>",
-            f"<p>CSV data currently contains initial yaw rate(s): {omegas} rad/s. Figure time histories use "
-            f"omega0 = {rc.format_number(selected_omega)} rad/s.</p>",
+            "<p>A flat cylinder spins on a flat hydroelastic plate with zero linear velocity and zero torsional and "
+            "rolling friction, so spin-down comes only from sliding friction across the contact patch. The comparison "
+            "is reduce off versus reduce on, pre-prune off in both.</p>",
+            "<p>Reference: uniform-pressure disk, <code>Tz = -(2/3) mu m g R sign(omega)</code>, "
+            "<code>t_stop = (3/4) omega0 R / (mu g)</code>, with omega decaying linearly.</p>",
+            f"<p>Yaw rates: {omegas} rad/s; time histories use omega0 = {rc.format_number(selected_omega)} rad/s.</p>",
             "<h2>Measured Quantities</h2>",
+            "<p>Primary (Figure 1, directly measured):</p>",
             "<ul>",
-            "<li>Solver yaw torque about the cylinder COM, computed from solver contact forces and contact-point "
-            "lever arms.</li>",
-            "<li>Yaw rate, normalized yaw rate, spin stop time, and integrated yaw impulse.</li>",
-            "<li>Vertical support force, final drift, final tilt, and penetration depth.</li>",
-            "<li>Solver contact count, raw face contact count, rigid contact count, and buffer validity flags.</li>",
+            "<li>Solver yaw torque <code>Tz</code> about the cylinder COM.</li>",
+            "<li>Normalized yaw rate <code>omega_z / omega0</code>.</li>",
+            "</ul>",
+            "<p>Secondary (derived / checks):</p>",
+            "<ul>",
+            "<li>Spin stop time and mean active yaw torque versus the uniform-pressure reference.</li>",
+            "<li>Final lateral drift (eps=0 instability gate), tilt, and penetration depth.</li>",
+            "<li>Solver, rigid, and raw face contact counts with buffer validity flags.</li>",
             "</ul>",
             "<h2>Results</h2>",
             f"<ul>\n{rc.bullet_list(_result_bullets(summaries))}\n</ul>",

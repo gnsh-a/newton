@@ -27,7 +27,7 @@ HYPOTHESIS_RECORD_SOURCE = Path(__file__).resolve().parents[1] / "hypothesis" / 
 TIMESERIES_CSV = "sliding_spinning_timeseries.csv"
 SUMMARY_CSV = "sliding_spinning_summary.csv"
 
-PAGE_TITLE = "H5: Sliding-Spinning Cylinder Contact Reduction"
+PAGE_TITLE = "H5: Sliding-Spinning Cylinder"
 SPEED_COLOR = "#0891b2"
 SPIN_COLOR = "#7c3aed"
 GRAVITY = 9.81
@@ -83,54 +83,110 @@ def _figure_state_history(
     *,
     selected_epsilon: float,
 ) -> str:
-    rows_by_mode = runs[selected_epsilon]
+    # Overlay every eps0 (color = eps0, dash = mode, dotted = Farkas analytic);
+    # opens on the representative eps0 with the others a dropdown away.
+    epsilons = sorted(runs)
+    default_group = f"eps0 = {rc.format_number(selected_epsilon)}"
+    epsilon_series: list[rc.Series] = []
+    speed_series: list[rc.Series] = []
+    omega_series: list[rc.Series] = []
+    all_times: list[float] = []
+    for index, eps in enumerate(epsilons):
+        rows_by_mode = runs[eps]
+        group = f"eps0 = {rc.format_number(eps)}"
+        color = rc.group_color(index)
+        for mode in rc.MODES:
+            rows = rows_by_mode.get(mode)
+            if not rows:
+                continue
+            mode_dash = None if mode == "reduced" else "dash"
+            solo = rc.SOLO_MODE_COLORS[mode]
+            label = f"{group} · {rc.MODE_LABELS[mode]}"
+            times = [rc.as_float(row, "time_s") for row in rows]
+            all_times.extend(times)
+            epsilon_series.append(
+                rc.Series(
+                    times,
+                    [rc.as_float(row, "epsilon") for row in rows],
+                    label,
+                    color,
+                    dash=mode_dash,
+                    group=group,
+                    solo_color=solo,
+                )
+            )
+            speed_series.append(
+                rc.Series(
+                    times,
+                    [rc.as_float(row, "horizontal_speed_m_per_s") for row in rows],
+                    label,
+                    color,
+                    dash=mode_dash,
+                    group=group,
+                    solo_color=solo,
+                )
+            )
+            omega_series.append(
+                rc.Series(
+                    times,
+                    [rc.as_float(row, "cylinder_omega_z_rad_per_s") for row in rows],
+                    label,
+                    color,
+                    dash=mode_dash,
+                    group=group,
+                    solo_color=solo,
+                )
+            )
+        reference_rows = rows_by_mode.get("unreduced") or next(
+            (rows for rows in (rows_by_mode.get(m) for m in rc.MODES) if rows), []
+        )
+        traj_t, traj_v, traj_w, traj_e = _farkas_state_trajectory(reference_rows)
+        if traj_t:
+            ref = rc.REFERENCE_COLOR
+            epsilon_series.append(
+                rc.Series(traj_t, traj_e, f"{group} · Farkas analytic", color, dash="dot", group=group, solo_color=ref)
+            )
+            speed_series.append(
+                rc.Series(traj_t, traj_v, f"{group} · Farkas analytic", color, dash="dot", group=group, solo_color=ref)
+            )
+            omega_series.append(
+                rc.Series(traj_t, traj_w, f"{group} · Farkas analytic", color, dash="dot", group=group, solo_color=ref)
+            )
 
-    epsilon_series = list(rc.mode_series(rows_by_mode, x_key="time_s", y_key="epsilon"))
-    speed_series = rc.mode_series(rows_by_mode, x_key="time_s", y_key="horizontal_speed_m_per_s")
-    omega_series = rc.mode_series(rows_by_mode, x_key="time_s", y_key="cylinder_omega_z_rad_per_s")
+    time_range = rc.padded_range(all_times, include=(0.0,))
 
-    reference_rows = rows_by_mode.get("unreduced")
-    if reference_rows is None:
-        reference_rows = next((rows for rows in (rows_by_mode.get(m) for m in rc.MODES) if rows), [])
-    traj_t, traj_v, traj_w, traj_e = _farkas_state_trajectory(reference_rows)
-    if traj_t:
-        epsilon_series.append(rc.Series(traj_t, traj_e, "Farkas analytic", rc.REFERENCE_COLOR, dash="2 3"))
-        speed_series.append(rc.Series(traj_t, traj_v, "Farkas analytic", rc.REFERENCE_COLOR, dash="2 3"))
-        omega_series.append(rc.Series(traj_t, traj_w, "Farkas analytic", rc.REFERENCE_COLOR, dash="2 3"))
+    def _hist(title: str, ylabel: str, series: list[rc.Series], y_range: tuple[float, float]) -> rc.Figure:
+        return rc.Figure(
+            title=title,
+            xlabel="time [s]",
+            ylabel=ylabel,
+            series=series,
+            x_range=time_range,
+            y_range=y_range,
+            selector="epsilon0",
+            selector_default=default_group,
+            height=360,
+        )
 
-    all_times = [x for series in epsilon_series for x in series.xs]
     return rc.figure_grid(
         [
-            rc.Figure(
-                title="Coupling ratio",
-                xlabel="time [s]",
-                ylabel="epsilon = v / (R |omega|)",
-                series=epsilon_series,
-                x_range=rc.padded_range(all_times, include=(0.0,), floor_span=0.05),
-                y_range=rc.padded_range(
-                    [y for series in epsilon_series for y in series.ys],
-                    floor_span=0.2,
-                ),
+            _hist(
+                "Coupling ratio",
+                "epsilon = v / (R |omega|)",
+                epsilon_series,
+                rc.padded_range([y for series in epsilon_series for y in series.ys]),
             ),
-            rc.Figure(
-                title="Horizontal speed",
-                xlabel="time [s]",
-                ylabel="speed [m/s]",
-                series=speed_series,
-                x_range=rc.padded_range(all_times, include=(0.0,), floor_span=0.05),
-                y_range=rc.padded_range(
-                    [y for series in speed_series for y in series.ys], include=(0.0,), floor_span=0.05
-                ),
+            _hist(
+                "Horizontal speed",
+                "speed [m/s]",
+                speed_series,
+                rc.padded_range([y for series in speed_series for y in series.ys], include=(0.0,)),
             ),
-            rc.Figure(
-                title="Yaw rate",
-                xlabel="time [s]",
-                ylabel="omega_z [rad/s]",
-                series=omega_series,
-                x_range=rc.padded_range(all_times, include=(0.0,), floor_span=0.05),
-                y_range=rc.padded_range(
-                    [y for series in omega_series for y in series.ys], include=(0.0,), floor_span=1.0
-                ),
+            _hist(
+                "Yaw rate",
+                "omega_z [rad/s]",
+                omega_series,
+                rc.padded_range([y for series in omega_series for y in series.ys], include=(0.0,)),
             ),
         ]
     )
@@ -141,42 +197,75 @@ def _figure_solver_history(
     *,
     selected_epsilon: float,
 ) -> str:
-    rows_by_mode = runs[selected_epsilon]
-    fx_series = rc.mode_series(rows_by_mode, x_key="time_s", y_key="solver_fx_N")
-    tz_series = rc.mode_series(rows_by_mode, x_key="time_s", y_key="solver_tz_Nm", scale=1000.0)
-    contact_series = rc.mode_series(rows_by_mode, x_key="time_s", y_key="solver_force_count")
-    all_times = [x for series in fx_series for x in series.xs]
+    epsilons = sorted(runs)
+    default_group = f"eps0 = {rc.format_number(selected_epsilon)}"
+    fx_series: list[rc.Series] = []
+    tz_series: list[rc.Series] = []
+    all_times: list[float] = []
+    for index, eps in enumerate(epsilons):
+        rows_by_mode = runs[eps]
+        group = f"eps0 = {rc.format_number(eps)}"
+        color = rc.group_color(index)
+        for mode in rc.MODES:
+            rows = rows_by_mode.get(mode)
+            if not rows:
+                continue
+            mode_dash = None if mode == "reduced" else "dash"
+            solo = rc.SOLO_MODE_COLORS[mode]
+            label = f"{group} · {rc.MODE_LABELS[mode]}"
+            times = [rc.as_float(row, "time_s") for row in rows]
+            all_times.extend(times)
+            fx_series.append(
+                rc.Series(
+                    times,
+                    [rc.as_float(row, "solver_fx_N") for row in rows],
+                    label,
+                    color,
+                    dash=mode_dash,
+                    group=group,
+                    solo_color=solo,
+                )
+            )
+            tz_series.append(
+                rc.Series(
+                    times,
+                    [1000.0 * rc.as_float(row, "solver_tz_Nm") for row in rows],
+                    label,
+                    color,
+                    dash=mode_dash,
+                    group=group,
+                    solo_color=solo,
+                )
+            )
+
+    time_range = rc.padded_range(all_times, include=(0.0,))
+
+    def _hist(title: str, ylabel: str, series: list[rc.Series], y_range: tuple[float, float]) -> rc.Figure:
+        return rc.Figure(
+            title=title,
+            xlabel="time [s]",
+            ylabel=ylabel,
+            series=series,
+            x_range=time_range,
+            y_range=y_range,
+            selector="epsilon0",
+            selector_default=default_group,
+            height=360,
+        )
+
     return rc.figure_grid(
         [
-            rc.Figure(
-                title="Solver force along sliding direction",
-                xlabel="time [s]",
-                ylabel="Fx [N]",
-                series=fx_series,
-                x_range=rc.padded_range(all_times, include=(0.0,), floor_span=0.05),
-                y_range=rc.padded_range(
-                    [y for series in fx_series for y in series.ys], include=(0.0,), floor_span=0.05
-                ),
+            _hist(
+                "Solver force along sliding direction",
+                "Fx [N]",
+                fx_series,
+                rc.padded_range([y for series in fx_series for y in series.ys], include=(0.0,)),
             ),
-            rc.Figure(
-                title="Solver yaw torque",
-                xlabel="time [s]",
-                ylabel="Tz [mN m]",
-                series=tz_series,
-                x_range=rc.padded_range(all_times, include=(0.0,), floor_span=0.05),
-                y_range=rc.padded_range([y for series in tz_series for y in series.ys], include=(0.0,), floor_span=0.5),
-            ),
-            rc.Figure(
-                title="Solver contact count",
-                xlabel="time [s]",
-                ylabel="contacts",
-                series=contact_series,
-                x_range=rc.padded_range(all_times, include=(0.0,), floor_span=0.05),
-                y_range=rc.padded_range(
-                    [y for series in contact_series for y in series.ys],
-                    include=(0.0,),
-                    floor_span=50.0,
-                ),
+            _hist(
+                "Solver yaw torque",
+                "Tz [mN m]",
+                tz_series,
+                rc.padded_range([y for series in tz_series for y in series.ys], include=(0.0,)),
             ),
         ]
     )
@@ -405,7 +494,7 @@ def _figure_sweep_summary(summaries: dict[float, dict[str, dict[str, str]]]) -> 
     x_ticks = epsilons if len(epsilons) <= 8 else None
 
     late_epsilon_series = [
-        _reference_series(summaries, key="epsilon_reference", label="reference epsilon"),
+        _reference_series(summaries, key="epsilon_reference", label="Farkas attractor eps* = 0.653"),
         _summary_series(summaries, mode="unreduced", key="late_epsilon"),
         _summary_series(summaries, mode="reduced", key="late_epsilon"),
     ]
@@ -438,17 +527,6 @@ def _figure_sweep_summary(summaries: dict[float, dict[str, dict[str, str]]]) -> 
         _summary_series(summaries, mode="unreduced", key="final_speed_m_per_s"),
         _summary_series(summaries, mode="reduced", key="final_speed_m_per_s"),
     ]
-    ratio_xs = []
-    ratio_ys = []
-    for epsilon0 in epsilons:
-        off = summaries[epsilon0].get("unreduced")
-        on = summaries[epsilon0].get("reduced")
-        if off is None or on is None:
-            continue
-        off_count = rc.as_float(off, "mean_solver_force_count")
-        ratio_xs.append(epsilon0)
-        ratio_ys.append(rc.as_float(on, "mean_solver_force_count") / off_count if off_count > 0.0 else float("nan"))
-    ratio_series = [rc.Series(ratio_xs, ratio_ys, "reduce on / reduce off", "#059669", draw_marker=True)]
 
     return rc.figure_grid(
         [
@@ -489,17 +567,44 @@ def _figure_sweep_summary(summaries: dict[float, dict[str, dict[str, str]]]) -> 
                 ),
                 x_ticks=x_ticks,
             ),
-            rc.Figure(
-                title="Contact count ratio",
-                xlabel="initial epsilon",
-                ylabel="ratio",
-                series=ratio_series,
-                x_range=x_range,
-                y_range=rc.padded_range(ratio_ys, include=(0.0,), floor_span=0.05),
-                x_ticks=x_ticks,
-            ),
         ]
     )
+
+
+def _checks_table(summaries: dict[float, dict[str, dict[str, str]]]) -> str:
+    """Figure 4: contact counts, buffer utilization, drift gate, and simultaneous-stop gate."""
+
+    headers = [
+        "eps0",
+        "mode",
+        "mean contacts",
+        "max rigid / cap",
+        "overflow",
+        "hash fail",
+        "drift [mm]",
+        "coupled stop",
+    ]
+    rows = []
+    for epsilon0 in sorted(summaries):
+        for mode in rc.MODES:
+            row = summaries[epsilon0].get(mode)
+            if row is None:
+                continue
+            max_rigid = rc.format_number(rc.as_float(row, "max_rigid_contact_count"), precision=4)
+            cap = rc.format_number(rc.as_float(row, "rigid_contact_capacity"), precision=4)
+            rows.append(
+                [
+                    rc.format_number(epsilon0),
+                    rc.MODE_LABELS.get(mode, mode),
+                    rc.format_number(rc.as_float(row, "mean_solver_force_count"), precision=4),
+                    f"{max_rigid} / {cap}",
+                    row.get("buffer_overflow", "n/a"),
+                    rc.format_number(rc.as_float(row, "max_reduction_hashtable_failures"), precision=4),
+                    rc.format_number(1000.0 * rc.as_float(row, "final_y_drift_m")),
+                    row.get("coupled_stopped", "n/a"),
+                ]
+            )
+    return rc.data_table(headers, rows)
 
 
 def _result_bullets(summaries: dict[float, dict[str, dict[str, str]]]) -> list[str]:
@@ -523,17 +628,14 @@ def _result_bullets(summaries: dict[float, dict[str, dict[str, str]]]) -> list[s
         if off_count > 0.0:
             ratios.append(on_count / off_count)
         bullets.append(
-            "epsilon0 = "
-            f"{rc.format_number(epsilon0)}: late epsilon off/on = "
-            f"{rc.format_number(rc.as_float(off, 'late_epsilon'))} / "
-            f"{rc.format_number(rc.as_float(on, 'late_epsilon'))}; "
-            "speed stop off/on = "
-            f"{rc.format_number(rc.as_float(off, 'speed_stop_time_s'))} / "
-            f"{rc.format_number(rc.as_float(on, 'speed_stop_time_s'))} s; "
-            "spin stop off/on = "
-            f"{rc.format_number(rc.as_float(off, 'spin_stop_time_s'))} / "
-            f"{rc.format_number(rc.as_float(on, 'spin_stop_time_s'))} s; "
-            f"mean solver contacts off/on = {rc.format_number(off_count)} / {rc.format_number(on_count)}."
+            f"eps0 {rc.format_number(epsilon0)}: late eps off/on = "
+            f"{rc.format_number(rc.as_float(off, 'late_epsilon'))}/"
+            f"{rc.format_number(rc.as_float(on, 'late_epsilon'))} (-> 0.653); "
+            "speed/spin stop off = "
+            f"{rc.format_number(rc.as_float(off, 'speed_stop_time_s'))}/"
+            f"{rc.format_number(rc.as_float(off, 'spin_stop_time_s'))} s, on = "
+            f"{rc.format_number(rc.as_float(on, 'speed_stop_time_s'))}/"
+            f"{rc.format_number(rc.as_float(on, 'spin_stop_time_s'))} s."
         )
 
     if ratios:
@@ -559,59 +661,56 @@ def _build_html(
     panels = [
         rc.TabPanel(
             "Figure 1",
-            "<p>Figure 1 checks the coupled state response. A mismatch here means the reduced contact set is changing "
-            "how friction is split between translation and yaw spin.</p>\n"
+            "<p>Figure 1: primary coupled state versus time &mdash; coupling ratio epsilon, horizontal speed, and yaw "
+            "rate, each against the Farkas analytic trajectory (epsilon converging to 0.653).</p>\n"
             + _figure_state_history(runs, selected_epsilon=selected_epsilon),
         ),
         rc.TabPanel(
             "Figure 2",
-            "<p>Figure 2 checks the direct solver outputs behind that state response: force along the initial sliding "
-            "direction, yaw torque, and solver contact count.</p>\n"
-            + _figure_solver_history(runs, selected_epsilon=selected_epsilon),
+            "<p>Figure 2: the solver forces behind that state (Fx, yaw torque) and the pointwise Farkas check &mdash; "
+            "measured <code>|Tz|/(R|F_horiz|)</code> vs <code>T(eps)/F(eps)</code>. Radius is recovered from data and "
+            "the friction/load factor cancels, so both modes should sit on the curve.</p>\n"
+            + _figure_solver_history(runs, selected_epsilon=selected_epsilon)
+            + _figure_coupling(runs),
         ),
         rc.TabPanel(
             "Figure 3",
-            "<p>Figure 3 summarizes the sweep across initial coupling ratios. It keeps the non-stopped cases visible "
-            "through final horizontal speed instead of hiding them behind missing stop times.</p>\n"
-            + _figure_sweep_summary(summaries),
+            "<p>Figure 3: sweep across initial coupling ratios &mdash; late epsilon vs the 0.653 attractor, speed and "
+            "spin stop times (simultaneous if coupled), and final speed.</p>\n" + _figure_sweep_summary(summaries),
         ),
         rc.TabPanel(
             "Figure 4",
-            "<p>Figure 4 is the pointwise Farkas check: the measured torque-to-force lever ratio "
-            "<code>|Tz|/(R|F_horiz|)</code> against the uniform-disk prediction <code>T(eps)/F(eps)</code>. The "
-            "radius is recovered from logged data and the friction/load factor cancels in the ratio, so both "
-            "modes should sit on the analytic curve if reduction preserves the force-torque coupling.</p>\n"
-            + _figure_coupling(runs),
+            "<p>Figure 4: contact counts, buffer utilization, the drift gate, and the simultaneous-stop gate.</p>\n"
+            + _checks_table(summaries),
         ),
     ]
 
     body = "\n".join(
         [
             f"<h1>{rc.escape(PAGE_TITLE)}</h1>",
-            "<p>This experiment tests whether contact reduction preserves the coupled friction response of a flat "
-            "cylinder that is both sliding and yaw-spinning on a flat hydroelastic plate. Torsional and rolling "
-            "friction are zero, so translation and spin must both change through solver sliding-friction forces "
-            "distributed over the same contact patch.</p>",
-            "<p>The comparison is reduce off versus reduce on, with pre-prune off in both modes. The sweep variable is "
-            "<code>epsilon0 = v0 / (R * omega0)</code>; the logged coupling ratio is "
-            "<code>epsilon = v / (R * |omega_z|)</code>.</p>",
-            f"<p>CSV data currently contains epsilon0 values: {epsilons}. Initial yaw rate is "
-            f"{rc.format_number(initial_omega)} rad/s. Figure time histories use epsilon0 = "
-            f"{rc.format_number(selected_epsilon)}.</p>",
+            "<p>A flat cylinder both slides and yaw-spins on a flat hydroelastic plate. Torsional and rolling friction "
+            "are zero, so translation and spin both decay through sliding friction over the same patch &mdash; the "
+            "solver must get force and torque from one reduced contact set. Compare reduce off vs reduce on, pre-prune "
+            "off in both.</p>",
+            f"<p>Sweep variable <code>epsilon0 = v0 / (R * omega0)</code>; logged <code>epsilon = v / (R |omega_z|)</code>. "
+            f"Values: {epsilons}; initial yaw rate {rc.format_number(initial_omega)} rad/s; time histories use "
+            f"epsilon0 = {rc.format_number(selected_epsilon)}.</p>",
             "<h2>Reference</h2>",
-            "<p>Uniform-pressure sliding-spinning disk (Farkas et al., Phys. Rev. Lett. 90, 248302, 2003): the "
-            "friction force and yaw torque are <code>|F| = mu Fn F(eps)</code> and <code>|Tz| = mu Fn R T(eps)</code>, "
-            "with F and T the closed-form elliptic-integral functions of <code>eps = v/(R|omega|)</code>. Their "
-            "ratio <code>|Tz|/(R|F_horiz|) = T(eps)/F(eps)</code> is independent of friction and normal load. The "
-            "disk also has a universal terminal ratio <code>eps* ~ 0.653</code>, reached regardless of initial "
-            "conditions, with sliding and spinning stopping at the same moment.</p>",
+            "<p>Uniform-pressure sliding-spinning disk (Farkas et al., PRL 90, 248302, 2003): "
+            "<code>|F| = mu Fn F(eps)</code>, <code>|Tz| = mu Fn R T(eps)</code>. The ratio "
+            "<code>|Tz|/(R|F_horiz|) = T(eps)/F(eps)</code> is friction- and load-independent. The disk has a "
+            "universal terminal ratio <code>eps* ~ 0.653</code>, with sliding and spinning stopping together.</p>",
             "<h2>Measured Quantities</h2>",
+            "<p>Primary (Figure 1, directly measured):</p>",
             "<ul>",
-            "<li>Solver force and torque on the cylinder.</li>",
-            "<li>Horizontal speed, yaw rate, and coupling ratio <code>epsilon</code>.</li>",
-            "<li>Translation stop time, spin stop time, final speed, final drift, tilt, and penetration depth.</li>",
-            "<li>Solver contact count, raw face contact count, rigid contact count, and contact-buffer validity "
-            "flags.</li>",
+            "<li>Horizontal speed <code>v</code> and yaw rate <code>omega_z</code>.</li>",
+            "<li>Coupling ratio <code>epsilon = v / (R |omega_z|)</code>.</li>",
+            "</ul>",
+            "<p>Secondary (derived / checks):</p>",
+            "<ul>",
+            "<li>Solver force <code>Fx</code>, yaw torque <code>Tz</code>, and the coupling ratio vs Farkas.</li>",
+            "<li>Speed/spin stop times, late epsilon, final speed, drift, tilt, penetration.</li>",
+            "<li>Solver, rigid, and raw face contact counts with buffer validity flags.</li>",
             "</ul>",
             "<h2>Results</h2>",
             f"<ul>\n{rc.bullet_list(_result_bullets(summaries))}\n</ul>",

@@ -26,7 +26,7 @@ HYPOTHESIS_RECORD_SOURCE = Path(__file__).resolve().parents[1] / "hypothesis" / 
 TIMESERIES_CSV = "tipping_timeseries.csv"
 SUMMARY_CSV = "tipping_summary.csv"
 
-PAGE_TITLE = "H3: Cube-on-Plate Tipping Contact Reduction"
+PAGE_TITLE = "H3: Cube-on-Plate Tipping"
 
 
 def load_timeseries(csv_dir: str | Path) -> dict[str, list[dict[str, str]]]:
@@ -57,8 +57,65 @@ def load_summaries(csv_dir: str | Path) -> dict[str, dict[str, str]]:
     return grouped
 
 
-def _figure_state(rows_by_mode: dict[str, list[dict[str, str]]]) -> str:
+def _figure_primary(rows_by_mode: dict[str, list[dict[str, str]]], *, weight_n: float, ftip_n: float) -> str:
+    """Figure 1: directly-measured primary quantities with their analytic references."""
+
     pitch_series = rc.mode_series(rows_by_mode, x_key="applied_force_over_ftip", y_key="cube_pitch_deg")
+    fz_series = rc.mode_series(rows_by_mode, x_key="applied_force_over_ftip", y_key="solver_fz_N")
+    fx_series = rc.mode_series(rows_by_mode, x_key="applied_force_over_ftip", y_key="solver_fx_N")
+    all_xs = [x for series in pitch_series for x in series.xs]
+    x_range = rc.padded_range(all_xs, include=(0.0, 1.0), floor_span=0.2)
+    x_max = max(all_xs or [1.0])
+    # Pre-slide static equilibrium: the contact friction reaction balances the applied
+    # push, so solver_fx = -F_applied = -(F/Ftip) * Ftip.
+    static_balance = rc.Series(
+        [0.0, x_max], [0.0, -x_max * ftip_n], "static balance Fx = -F_applied", rc.REFERENCE_COLOR, dash="2 3"
+    )
+    tip_onset = ((1.0, "tip onset", rc.REFERENCE_COLOR),)
+    return rc.figure_grid(
+        [
+            rc.Figure(
+                title="Cube pitch under ramped top force",
+                xlabel="applied force / analytic tip force",
+                ylabel="pitch [deg]",
+                series=pitch_series,
+                x_range=x_range,
+                y_range=rc.padded_range(
+                    [y for series in pitch_series for y in series.ys], include=(0.0, 10.0), floor_span=1.0
+                ),
+                hlines=((0.0, "rigid: zero pre-tip pitch", rc.REFERENCE_COLOR),),
+                vlines=tip_onset,
+            ),
+            rc.Figure(
+                title="Solver vertical support force",
+                xlabel="applied force / analytic tip force",
+                ylabel="Fz [N]",
+                series=fz_series,
+                x_range=x_range,
+                y_range=rc.padded_range(
+                    [y for series in fz_series for y in series.ys] + [weight_n], include=(0.0,), floor_span=0.5
+                ),
+                hlines=((weight_n, "weight m*g", rc.REFERENCE_COLOR),),
+                vlines=tip_onset,
+            ),
+            rc.Figure(
+                title="Solver horizontal reaction force",
+                xlabel="applied force / analytic tip force",
+                ylabel="Fx [N]",
+                series=[static_balance, *fx_series],
+                x_range=x_range,
+                y_range=rc.padded_range(
+                    [y for series in fx_series for y in series.ys] + [-x_max * ftip_n], include=(0.0,), floor_span=0.5
+                ),
+                vlines=tip_onset,
+            ),
+        ]
+    )
+
+
+def _figure_additional(rows_by_mode: dict[str, list[dict[str, str]]], summaries: dict[str, dict[str, str]]) -> str:
+    """Figure 2: derived/secondary quantities — center-pressure shift, drift, event force."""
+
     # Physical center of pressure = normal-force offset, removing the base friction torque
     # (-Ty/Fz folds in friction and reads half the true offset): cop/he = (-Ty/Fz)/he - Fx/Fz.
     cop_series = []
@@ -75,108 +132,15 @@ def _figure_state(rows_by_mode: dict[str, list[dict[str, str]]]) -> str:
             cop_ys.append((cop_he - fx / fz) if fz else float("nan"))
         cop_series.append(rc.Series(cop_xs, cop_ys, rc.MODE_LABELS[mode], rc.MODE_COLORS[mode]))
     x_series = rc.mode_series(rows_by_mode, x_key="applied_force_over_ftip", y_key="cube_x_m", scale=1000.0)
-    all_xs = [x for series in pitch_series for x in series.xs]
+    all_xs = [x for series in x_series for x in series.xs]
     x_range = rc.padded_range(all_xs, include=(0.0, 1.0), floor_span=0.2)
-    front_edge = rc.Series([0.0, max(all_xs or [1.0])], [1.0, 1.0], "front edge", rc.REFERENCE_COLOR, dash="5 4")
     analytic_cop = rc.Series([0.0, 1.0], [0.0, 1.0], "analytic cop = F/Ftip", rc.REFERENCE_COLOR, dash="2 3")
-    return rc.figure_grid(
-        [
-            rc.Figure(
-                title="Cube pitch under ramped top force",
-                xlabel="applied force / analytic tip force",
-                ylabel="pitch [deg]",
-                series=pitch_series,
-                x_range=x_range,
-                y_range=rc.padded_range(
-                    [y for series in pitch_series for y in series.ys], include=(0.0, 10.0), floor_span=1.0
-                ),
-            ),
-            rc.Figure(
-                title="Center-pressure shift",
-                xlabel="applied force / analytic tip force",
-                ylabel="cop_x / half extent",
-                series=[analytic_cop, front_edge, *cop_series],
-                x_range=x_range,
-                y_range=rc.padded_range(
-                    [y for series in cop_series for y in series.ys], include=(0.0, 1.0), floor_span=0.2
-                ),
-            ),
-            rc.Figure(
-                title="Horizontal drift",
-                xlabel="applied force / analytic tip force",
-                ylabel="x [mm]",
-                series=x_series,
-                x_range=x_range,
-                y_range=rc.padded_range([y for series in x_series for y in series.ys], include=(0.0,), floor_span=1.0),
-            ),
-        ]
-    )
 
-
-def _figure_solver(rows_by_mode: dict[str, list[dict[str, str]]]) -> str:
-    fz_series = rc.mode_series(rows_by_mode, x_key="applied_force_over_ftip", y_key="solver_fz_N")
-    ty_series = rc.mode_series(rows_by_mode, x_key="applied_force_over_ftip", y_key="solver_ty_Nm", scale=1000.0)
-    count_series = rc.mode_series(rows_by_mode, x_key="applied_force_over_ftip", y_key="solver_force_count")
-    all_xs = [x for series in fz_series for x in series.xs]
-    x_range = rc.padded_range(all_xs, include=(0.0, 1.0), floor_span=0.2)
-    return rc.figure_grid(
-        [
-            rc.Figure(
-                title="Solver vertical support force",
-                xlabel="applied force / analytic tip force",
-                ylabel="Fz [N]",
-                series=fz_series,
-                x_range=x_range,
-                y_range=rc.padded_range([y for series in fz_series for y in series.ys], include=(0.0,), floor_span=0.5),
-            ),
-            rc.Figure(
-                title="Solver pitch torque",
-                xlabel="applied force / analytic tip force",
-                ylabel="Ty [mN m]",
-                series=ty_series,
-                x_range=x_range,
-                y_range=rc.padded_range(
-                    [y for series in ty_series for y in series.ys], include=(0.0,), floor_span=10.0
-                ),
-            ),
-            rc.Figure(
-                title="Solver contact count",
-                xlabel="applied force / analytic tip force",
-                ylabel="contacts",
-                series=count_series,
-                x_range=x_range,
-                y_range=rc.padded_range(
-                    [y for series in count_series for y in series.ys], include=(0.0,), floor_span=50.0
-                ),
-            ),
-        ]
-    )
-
-
-def _figure_summary(summaries: dict[str, dict[str, str]]) -> str:
-    ratios = [0.25, 0.50, 0.75, 0.90]
-    pitch_keys = (
-        "pitch_at_0p25_ftip_deg",
-        "pitch_at_0p50_ftip_deg",
-        "pitch_at_0p75_ftip_deg",
-        "pitch_at_0p90_ftip_deg",
-    )
-    pitch_series = []
     event_series = []
-    contact_series = []
     for idx, mode in enumerate(rc.MODES):
         row = summaries.get(mode)
         if row is None:
             continue
-        pitch_series.append(
-            rc.Series(
-                ratios,
-                [rc.as_float(row, key) for key in pitch_keys],
-                rc.MODE_LABELS[mode],
-                rc.MODE_COLORS[mode],
-                draw_marker=True,
-            )
-        )
         event_series.append(
             rc.Series(
                 [float(idx)],
@@ -187,55 +151,75 @@ def _figure_summary(summaries: dict[str, dict[str, str]]) -> str:
                 draw_marker=True,
             )
         )
-        contact_series.append(
-            rc.Series(
-                [float(idx)],
-                [rc.as_float(row, "mean_solver_force_count")],
-                rc.MODE_LABELS[mode],
-                rc.MODE_COLORS[mode],
-                draw_line=False,
-                draw_marker=True,
-            )
-        )
-
-    analytic_tip = rc.Series([0.0, 1.0], [1.0, 1.0], "analytic tip", rc.REFERENCE_COLOR, dash="5 4")
     return rc.figure_grid(
         [
             rc.Figure(
-                title="Pre-tip pitch samples",
+                title="Center-pressure shift (derived)",
                 xlabel="applied force / analytic tip force",
-                ylabel="pitch [deg]",
-                series=pitch_series,
-                x_range=(0.18, 0.97),
+                ylabel="cop_x / half extent",
+                series=[analytic_cop, *cop_series],
+                x_range=x_range,
                 y_range=rc.padded_range(
-                    [y for series in pitch_series for y in series.ys], include=(0.0,), floor_span=1.0
+                    [y for series in cop_series for y in series.ys], include=(0.0, 1.0), floor_span=0.2
                 ),
-                x_ticks=ratios,
+                hlines=((1.0, "front edge", rc.REFERENCE_COLOR),),
+                vlines=((1.0, "tip onset", rc.REFERENCE_COLOR),),
+            ),
+            rc.Figure(
+                title="Horizontal drift",
+                xlabel="applied force / analytic tip force",
+                ylabel="x [mm]",
+                series=x_series,
+                x_range=x_range,
+                y_range=rc.padded_range([y for series in x_series for y in series.ys], include=(0.0,), floor_span=1.0),
             ),
             rc.Figure(
                 title="First event force",
                 xlabel="mode index: 0 off, 1 on",
                 ylabel="force / F_tip",
-                series=[analytic_tip, *event_series],
+                series=event_series,
                 x_range=(-0.25, 1.25),
                 y_range=rc.padded_range(
                     [y for series in event_series for y in series.ys], include=(1.0,), floor_span=0.2
                 ),
                 x_ticks=[0.0, 1.0],
-            ),
-            rc.Figure(
-                title="Mean solver contact count",
-                xlabel="mode index: 0 off, 1 on",
-                ylabel="contacts",
-                series=contact_series,
-                x_range=(-0.25, 1.25),
-                y_range=rc.padded_range(
-                    [y for series in contact_series for y in series.ys], include=(0.0,), floor_span=50.0
-                ),
-                x_ticks=[0.0, 1.0],
+                hlines=((1.0, "analytic tip (F/Ftip = 1)", rc.REFERENCE_COLOR),),
             ),
         ]
     )
+
+
+def _checks_table(summaries: dict[str, dict[str, str]]) -> str:
+    """Figure 3: contact counts, buffer utilization, and validity gates as a table."""
+
+    headers = [
+        "mode",
+        "mean solver contacts",
+        "mean rigid contacts",
+        "max rigid contacts",
+        "rigid capacity",
+        "overflow",
+        "hash failures",
+        "state valid",
+    ]
+    rows = []
+    for mode in rc.MODES:
+        row = summaries.get(mode)
+        if row is None:
+            continue
+        rows.append(
+            [
+                rc.MODE_LABELS.get(mode, mode),
+                rc.format_number(rc.as_float(row, "mean_solver_force_count"), precision=4),
+                rc.format_number(rc.as_float(row, "mean_rigid_contact_count"), precision=4),
+                rc.format_number(rc.as_float(row, "max_rigid_contact_count"), precision=4),
+                rc.format_number(rc.as_float(row, "rigid_contact_capacity"), precision=4),
+                row.get("buffer_overflow", "n/a"),
+                rc.format_number(rc.as_float(row, "max_reduction_hashtable_failures"), precision=4),
+                "yes" if not rc.as_bool(row.get("state_invalid", "false")) else "no",
+            ]
+        )
+    return rc.data_table(headers, rows)
 
 
 def _result_bullets(summaries: dict[str, dict[str, str]]) -> list[str]:
@@ -281,22 +265,30 @@ def _build_html(
 ) -> str:
     ref = summaries.get("unreduced") or next(iter(summaries.values()))
     mu = rc.format_number(rc.as_float(ref, "mu_sliding"))
+    weight_n = rc.as_float(ref, "cube_weight_N")
+    ftip_n = rc.as_float(ref, "analytic_tip_force_N")
     tabs = rc.figure_tabs(
         [
             rc.TabPanel(
                 "Figure 1",
-                "<p>Figure 1 checks the rigid-body state response and the inferred center-pressure motion as the "
-                "top force approaches the analytic tip load.</p>\n" + _figure_state(rows_by_mode),
+                "<p>Figure 1: primary, directly-measured quantities versus applied force, each with its analytic "
+                "reference &mdash; cube pitch (rigid: zero pre-tip pitch), solver vertical support (weight m*g), and "
+                "solver horizontal reaction (static balance Fx = -F_applied). The vertical line marks the analytic "
+                f"tip onset at F/Ftip = 1 (F = m*g/2 = {rc.format_number(ftip_n)} N), where the contact point reaches "
+                "the front edge and the cube begins to tip.</p>\n"
+                + _figure_primary(rows_by_mode, weight_n=weight_n, ftip_n=ftip_n),
             ),
             rc.TabPanel(
                 "Figure 2",
-                "<p>Figure 2 checks the direct solver outputs behind the state response: vertical support, pitch "
-                "torque, and solver contact count.</p>\n" + _figure_solver(rows_by_mode),
+                "<p>Figure 2: additional derived response &mdash; the center-pressure shift "
+                "(cop_x/half_extent = F/Ftip, reaching the front edge at the tip-onset line), horizontal drift, and "
+                "the first tip/slide event force. Note the recorded event sits just past F/Ftip = 1 because it is "
+                "flagged at the 10 deg tilt threshold, a moment after the analytic onset.</p>\n"
+                + _figure_additional(rows_by_mode, summaries),
             ),
             rc.TabPanel(
                 "Figure 3",
-                "<p>Figure 3 summarizes pre-tip pitch samples, first event force, and the contact-count "
-                "reduction.</p>\n" + _figure_summary(summaries),
+                "<p>Figure 3: contact counts, buffer utilization, and validity gates.</p>\n" + _checks_table(summaries),
             ),
         ]
     )
@@ -319,12 +311,18 @@ def _build_html(
                 "rigid cube has zero pre-tip pitch; any pitch before the tip is a contact-compliance effect.</p>"
             ),
             "<h2>Measured Quantities</h2>",
+            "<p>Primary (Figure 1, directly measured):</p>",
             "<ul>",
-            "<li>Cube pitch and horizontal drift versus applied force.</li>",
-            "<li>Solver force and torque on the cube.</li>",
+            "<li>Cube pitch versus applied force.</li>",
+            "<li>Solver vertical support force <code>Fz</code>.</li>",
+            "<li>Solver horizontal reaction force <code>Fx</code>.</li>",
+            "</ul>",
+            "<p>Secondary (derived / checks):</p>",
+            "<ul>",
             "<li>Center of pressure from the solver wrench with the base friction torque removed: "
             "<code>cop_x = -(Ty + h*Fx) / Fz</code>.</li>",
-            "<li>First tip or slide event force, and solver contact-count reduction.</li>",
+            "<li>Horizontal drift, and the first tip or slide event force.</li>",
+            "<li>Solver, rigid, and raw face contact counts with buffer validity flags.</li>",
             "</ul>",
             "<h2>Results</h2>",
             f"<ul>\n{rc.bullet_list(_result_bullets(summaries))}\n</ul>",

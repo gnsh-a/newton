@@ -227,18 +227,9 @@ def _with_lines(series: list[rc.Series]) -> list[rc.Series]:
     ]
 
 
-def _figure_stopping_response(summaries: dict[float, dict[str, dict[str, str]]]) -> str:
+def _figure_additional(summaries: dict[float, dict[str, dict[str, str]]]) -> str:
     speeds = sorted(summaries)
     x_range = rc.padded_range(speeds, include=(0.0,), floor_span=0.05)
-
-    time_series = _with_lines(
-        [
-            _reference_series(summaries, key="expected_coulomb_stop_time_s"),
-            _series_from_summary(summaries, mode="unreduced", key="stop_time_s"),
-            _series_from_summary(summaries, mode="reduced", key="stop_time_s"),
-        ]
-    )
-    time_values = [value for plot_series in time_series for value in plot_series.ys]
 
     distance_series = _with_lines(
         [
@@ -247,25 +238,70 @@ def _figure_stopping_response(summaries: dict[float, dict[str, dict[str, str]]])
             _series_from_summary(summaries, mode="reduced", key="stop_travel_m", scale=1000.0),
         ]
     )
-    distance_values = [value for plot_series in distance_series for value in plot_series.ys]
+    time_series = _with_lines(
+        [
+            _reference_series(summaries, key="expected_coulomb_stop_time_s"),
+            _series_from_summary(summaries, mode="unreduced", key="stop_time_s"),
+            _series_from_summary(summaries, mode="reduced", key="stop_time_s"),
+        ]
+    )
+    drift_series = [
+        _series_from_summary(summaries, mode="unreduced", key="final_y_m", scale=1000.0),
+        _series_from_summary(summaries, mode="reduced", key="final_y_m", scale=1000.0),
+    ]
+    tilt_series = [
+        _series_from_summary(summaries, mode="unreduced", key="final_tilt_deg"),
+        _series_from_summary(summaries, mode="reduced", key="final_tilt_deg"),
+    ]
+    penetration_series = [
+        _series_from_summary(summaries, mode="unreduced", key="max_penetration_depth_m", scale=1000.0),
+        _series_from_summary(summaries, mode="reduced", key="max_penetration_depth_m", scale=1000.0),
+    ]
+
+    def _vals(series: list[rc.Series]) -> list[float]:
+        return [value for plot_series in series for value in plot_series.ys]
 
     return rc.figure_grid(
         [
             rc.Figure(
-                title="Stopping time",
-                xlabel="initial speed [m/s]",
-                ylabel="time [s]",
-                series=time_series,
-                x_range=x_range,
-                y_range=rc.padded_range(time_values, include=(0.0,), floor_span=0.02),
-            ),
-            rc.Figure(
-                title="Stopping distance",
+                title="Stopping distance (derived)",
                 xlabel="initial speed [m/s]",
                 ylabel="distance [mm]",
                 series=distance_series,
                 x_range=x_range,
-                y_range=rc.padded_range(distance_values, include=(0.0,), floor_span=1.0),
+                y_range=rc.padded_range(_vals(distance_series), include=(0.0,), floor_span=1.0),
+            ),
+            rc.Figure(
+                title="Stopping time (derived)",
+                xlabel="initial speed [m/s]",
+                ylabel="time [s]",
+                series=time_series,
+                x_range=x_range,
+                y_range=rc.padded_range(_vals(time_series), include=(0.0,), floor_span=0.02),
+            ),
+            rc.Figure(
+                title="Final lateral drift",
+                xlabel="initial speed [m/s]",
+                ylabel="drift [mm]",
+                series=drift_series,
+                x_range=x_range,
+                y_range=rc.padded_range(_vals(drift_series), include=(0.0,), floor_span=0.1),
+            ),
+            rc.Figure(
+                title="Final tilt",
+                xlabel="initial speed [m/s]",
+                ylabel="tilt [deg]",
+                series=tilt_series,
+                x_range=x_range,
+                y_range=rc.padded_range(_vals(tilt_series), include=(0.0,), floor_span=0.1),
+            ),
+            rc.Figure(
+                title="Max penetration depth",
+                xlabel="initial speed [m/s]",
+                ylabel="penetration [mm]",
+                series=penetration_series,
+                x_range=x_range,
+                y_range=rc.padded_range(_vals(penetration_series), include=(0.0,), floor_span=0.01),
             ),
         ],
         columns=1,
@@ -299,121 +335,116 @@ def _figure_time_history(
     *,
     selected_speed: float,
 ) -> str:
-    rows_by_mode = runs[selected_speed]
-    reference_summary = summaries[selected_speed].get("unreduced") or next(iter(summaries[selected_speed].values()))
-    all_times = sorted({time for rows in rows_by_mode.values() for time in _array(rows, "time_s")})
-    expected_speed, expected_travel = _expected_motion(speed=selected_speed, summary=reference_summary, times=all_times)
-
-    speed_series = [
-        rc.Series(all_times, expected_speed, "Coulomb reference", rc.REFERENCE_COLOR, draw_line=True, dash="5 5"),
-    ]
-    travel_series = [
-        rc.Series(
-            all_times,
-            [1000.0 * value for value in expected_travel],
-            "Coulomb reference",
-            rc.REFERENCE_COLOR,
-            draw_line=True,
-            dash="5 5",
-        ),
-    ]
+    # Overlay every initial speed (color = speed, dash = mode); the dropdown
+    # opens on the representative speed and can switch to another or "All".
+    speeds = sorted(runs)
+    default_group = f"v0 = {rc.format_number(selected_speed)} m/s"
+    speed_series: list[rc.Series] = []
+    travel_series: list[rc.Series] = []
     force_series: list[rc.Series] = []
-    count_series: list[rc.Series] = []
-    for mode in rc.MODES:
-        rows = rows_by_mode.get(mode)
-        if not rows:
-            continue
-        label = rc.MODE_LABELS.get(mode, mode)
-        color = rc.MODE_COLORS.get(mode, "#111827")
-        times = _array(rows, "time_s")
-        speed_series.append(rc.Series(times, _array(rows, "cube_speed_m_per_s"), label, color))
-        travel_series.append(rc.Series(times, [1000.0 * value for value in _array(rows, "cube_x_m")], label, color))
-        force_series.append(rc.Series(times, _array(rows, "solver_fx_N"), label, color))
-        count_series.append(rc.Series(times, _array(rows, "solver_force_count"), label, color))
+    all_times: list[float] = []
+    ref = rc.REFERENCE_COLOR
+    for index, speed in enumerate(speeds):
+        rows_by_mode = runs[speed]
+        group = f"v0 = {rc.format_number(speed)} m/s"
+        color = rc.group_color(index)
+        reference_summary = summaries[speed].get("unreduced") or next(iter(summaries[speed].values()))
+        times_here = sorted({time for rows in rows_by_mode.values() for time in _array(rows, "time_s")})
+        all_times.extend(times_here)
+        expected_speed, expected_travel = _expected_motion(speed=speed, summary=reference_summary, times=times_here)
+        ref_label = f"{group} · Coulomb reference"
+        speed_series.append(
+            rc.Series(times_here, expected_speed, ref_label, color, dash="dot", group=group, solo_color=ref)
+        )
+        travel_series.append(
+            rc.Series(
+                times_here,
+                [1000.0 * value for value in expected_travel],
+                ref_label,
+                color,
+                dash="dot",
+                group=group,
+                solo_color=ref,
+            )
+        )
+        for mode in rc.MODES:
+            rows = rows_by_mode.get(mode)
+            if not rows:
+                continue
+            mode_dash = None if mode == "reduced" else "dash"
+            solo = rc.SOLO_MODE_COLORS[mode]
+            label = f"{group} · {rc.MODE_LABELS.get(mode, mode)}"
+            times = _array(rows, "time_s")
+            speed_series.append(
+                rc.Series(
+                    times,
+                    _array(rows, "cube_speed_m_per_s"),
+                    label,
+                    color,
+                    dash=mode_dash,
+                    group=group,
+                    solo_color=solo,
+                )
+            )
+            travel_series.append(
+                rc.Series(
+                    times,
+                    [1000.0 * v for v in _array(rows, "cube_x_m")],
+                    label,
+                    color,
+                    dash=mode_dash,
+                    group=group,
+                    solo_color=solo,
+                )
+            )
+            force_series.append(
+                rc.Series(
+                    times, _array(rows, "solver_fx_N"), label, color, dash=mode_dash, group=group, solo_color=solo
+                )
+            )
 
-    time_range = rc.padded_range(all_times, include=(0.0,), floor_span=0.02)
+    time_range = rc.padded_range(all_times, include=(0.0,))
     speed_values = [value for plot_series in speed_series for value in plot_series.ys]
     travel_values = [value for plot_series in travel_series for value in plot_series.ys]
     force_values = [value for plot_series in force_series for value in plot_series.ys]
-    count_values = [value for plot_series in count_series for value in plot_series.ys]
+
+    def _ts_figure(title: str, ylabel: str, series: list[rc.Series], y_range: tuple[float, float]) -> rc.Figure:
+        return rc.Figure(
+            title=title,
+            xlabel="time [s]",
+            ylabel=ylabel,
+            series=series,
+            x_range=time_range,
+            y_range=y_range,
+            selector="velocity",
+            selector_default=default_group,
+            height=360,
+        )
 
     grid = rc.figure_grid(
         [
-            rc.Figure(
-                title="Horizontal speed",
-                xlabel="time [s]",
-                ylabel="speed [m/s]",
-                series=speed_series,
-                x_range=time_range,
-                y_range=rc.padded_range(speed_values, include=(0.0,), floor_span=0.05),
+            _ts_figure("Horizontal speed", "speed [m/s]", speed_series, rc.padded_range(speed_values, include=(0.0,))),
+            _ts_figure(
+                "Travel in sliding direction",
+                "travel [mm]",
+                travel_series,
+                rc.padded_range(travel_values, include=(0.0,)),
             ),
-            rc.Figure(
-                title="Travel in sliding direction",
-                xlabel="time [s]",
-                ylabel="travel [mm]",
-                series=travel_series,
-                x_range=time_range,
-                y_range=rc.padded_range(travel_values, include=(0.0,), floor_span=1.0),
-            ),
-            rc.Figure(
-                title="Solver friction force Fx",
-                xlabel="time [s]",
-                ylabel="force [N]",
-                series=force_series,
-                x_range=time_range,
-                y_range=rc.padded_range(force_values, include=(0.0,), floor_span=0.5),
-            ),
-            rc.Figure(
-                title="Solver force-contact count",
-                xlabel="time [s]",
-                ylabel="count",
-                series=count_series,
-                x_range=time_range,
-                y_range=_positive_log_range(count_values),
-                log_y=True,
+            _ts_figure(
+                "Solver friction force Fx", "force [N]", force_series, rc.padded_range(force_values, include=(0.0,))
             ),
         ],
         columns=1,
     )
-    return f"<p>Representative run: initial speed {rc.format_number(selected_speed)} m/s.</p>\n{grid}"
+    return (
+        "<p>Use the velocity dropdown to view one initial speed or overlay all; each speed is one color, with "
+        f"solid = reduce on, dashed = reduce off, dotted = Coulomb reference. Opens on "
+        f"{rc.format_number(selected_speed)} m/s.</p>\n" + grid
+    )
 
 
 def _figure_contact_counts(summaries: dict[float, dict[str, dict[str, str]]]) -> str:
-    speeds = sorted(summaries)
-    x_range = rc.padded_range(speeds, include=(0.0,), floor_span=0.05)
-    mean_series = [
-        _series_from_summary(summaries, mode="unreduced", key="mean_solver_force_count"),
-        _series_from_summary(summaries, mode="reduced", key="mean_solver_force_count"),
-    ]
-    max_series = [
-        _series_from_summary(summaries, mode="unreduced", key="max_rigid_contact_count"),
-        _series_from_summary(summaries, mode="reduced", key="max_rigid_contact_count"),
-    ]
-    all_counts = [value for plot_series in [*mean_series, *max_series] for value in plot_series.ys]
-    grid = rc.figure_grid(
-        [
-            rc.Figure(
-                title="Mean solver contact count",
-                xlabel="initial speed [m/s]",
-                ylabel="contacts",
-                series=mean_series,
-                x_range=x_range,
-                y_range=_positive_log_range(all_counts),
-                log_y=True,
-            ),
-            rc.Figure(
-                title="Max rigid contact count",
-                xlabel="initial speed [m/s]",
-                ylabel="contacts",
-                series=max_series,
-                x_range=x_range,
-                y_range=_positive_log_range(all_counts),
-                log_y=True,
-            ),
-        ],
-        columns=1,
-    )
-    return f"{grid}\n{_buffer_table(summaries)}"
+    return _buffer_table(summaries)
 
 
 def _figure_resolution_probe(probes: list[ResolutionProbe]) -> str:
@@ -429,44 +460,66 @@ def _figure_resolution_probe(probes: list[ResolutionProbe]) -> str:
         for speed in speeds
     }
 
-    figures: list[rc.Figure] = []
-    for speed in speeds:
+    # One overlaid chart, color-coded per velocity (dropdown filters to one or
+    # all): solid = reduce on, dashed = reduce off, dotted = Coulomb reference.
+    distance_series: list[rc.Series] = []
+    distance_values: list[float] = []
+    for index, speed in enumerate(speeds):
         speed_probes = by_speed[speed]
-        distance_series = [
-            rc.Series(
-                [probe.sdf_resolution for probe in speed_probes],
-                [probe.coulomb_stop_mm for probe in speed_probes],
-                "Coulomb reference",
-                rc.REFERENCE_COLOR,
-                draw_line=True,
-            ),
-            rc.Series(
-                [probe.sdf_resolution for probe in speed_probes if probe.reduce_off_stopped],
-                [probe.reduce_off_stop_mm for probe in speed_probes if probe.reduce_off_stopped],
-                rc.MODE_LABELS["unreduced"],
-                rc.MODE_COLORS["unreduced"],
-                draw_line=True,
-            ),
-            rc.Series(
-                [probe.sdf_resolution for probe in speed_probes if probe.reduce_on_stopped],
-                [probe.reduce_on_stop_mm for probe in speed_probes if probe.reduce_on_stopped],
-                rc.MODE_LABELS["reduced"],
-                rc.MODE_COLORS["reduced"],
-                draw_line=True,
-            ),
-        ]
-        distance_values = [value for plot_series in distance_series for value in plot_series.ys]
-        figures.append(
-            rc.Figure(
-                title=f"Stopping distance, v0 = {rc.format_number(speed, precision=3)} m/s",
-                xlabel="SDF resolution [cells/axis]",
-                ylabel="distance [mm]",
-                series=distance_series,
-                x_range=rc.padded_range(sdf_values, floor_span=8.0),
-                y_range=rc.padded_range(distance_values, include=(0.0,), floor_span=1.0),
-                x_ticks=sdf_values,
-            )
+        group = f"v0 = {rc.format_number(speed, precision=3)} m/s"
+        color = rc.group_color(index)
+        coulomb_y = [probe.coulomb_stop_mm for probe in speed_probes]
+        off_x = [probe.sdf_resolution for probe in speed_probes if probe.reduce_off_stopped]
+        off_y = [probe.reduce_off_stop_mm for probe in speed_probes if probe.reduce_off_stopped]
+        on_x = [probe.sdf_resolution for probe in speed_probes if probe.reduce_on_stopped]
+        on_y = [probe.reduce_on_stop_mm for probe in speed_probes if probe.reduce_on_stopped]
+        distance_series.extend(
+            [
+                rc.Series(
+                    [probe.sdf_resolution for probe in speed_probes],
+                    coulomb_y,
+                    f"{group} · Coulomb reference",
+                    color,
+                    dash="dot",
+                    group=group,
+                    solo_color=rc.REFERENCE_COLOR,
+                ),
+                rc.Series(
+                    off_x,
+                    off_y,
+                    f"{group} · reduce off",
+                    color,
+                    draw_marker=True,
+                    dash="dash",
+                    group=group,
+                    solo_color=rc.SOLO_MODE_COLORS["unreduced"],
+                ),
+                rc.Series(
+                    on_x,
+                    on_y,
+                    f"{group} · reduce on",
+                    color,
+                    draw_marker=True,
+                    group=group,
+                    solo_color=rc.SOLO_MODE_COLORS["reduced"],
+                ),
+            ]
         )
+        distance_values.extend([*coulomb_y, *off_y, *on_y])
+
+    figures: list[rc.Figure] = [
+        rc.Figure(
+            title="Stopping distance vs SDF resolution",
+            xlabel="SDF resolution [cells/axis]",
+            ylabel="distance [mm]",
+            series=distance_series,
+            x_range=rc.padded_range(sdf_values, floor_span=8.0),
+            y_range=rc.padded_range(distance_values, include=(0.0,), floor_span=1.0),
+            x_ticks=sdf_values,
+            selector="velocity",
+            height=460,
+        )
+    ]
 
     fastest_speed = speeds[-1]
     count_probes = by_speed[fastest_speed]
@@ -502,8 +555,10 @@ def _figure_resolution_probe(probes: list[ResolutionProbe]) -> str:
 
     grid = rc.figure_grid(figures, columns=1)
     return (
-        "<p>Points are separate runs. Missing stop-distance points indicate the run did not cross the stop "
-        f"threshold within the configured run window.</p>\n{grid}"
+        "<p>Use the velocity dropdown to overlay one initial speed or all of them; each speed is one color, with "
+        "solid = reduce on, dashed = reduce off, dotted = Coulomb reference. Points are separate runs; missing "
+        "stop-distance points indicate the run did not cross the stop threshold within the configured run "
+        f"window.</p>\n{grid}"
     )
 
 
@@ -530,19 +585,18 @@ def _result_bullets(summaries: dict[float, dict[str, dict[str, str]]]) -> list[s
         "Full sweep completed with valid buffers for both modes."
         if not any(buffer_overflows) and max(on_hash_failures, default=0.0) == 0.0
         else "At least one run failed a buffer validity check, so the result is inconclusive.",
-        "Reduce-on used far fewer solver contacts than the dense reduce-off run.",
-        "Reduce on did not match reduce off in stopping time or travel distance.",
     ]
     if on_closer and all(on_closer):
         bullets.append(
-            "Against the analytic Coulomb reference, reduce-on stayed close while the dense reduce-off run "
-            "traveled noticeably farther, most at low speed (see the summary table)."
+            "Reduce-on tracks the analytic Coulomb reference; dense reduce-off overshoots it, so reduce-on does "
+            "not match dense but is the more accurate run."
         )
     else:
-        bullets.append("Each mode is compared against the analytic Coulomb reference in the summary table.")
+        bullets.append("Reduce-on and dense are both compared against the analytic Coulomb reference (summary table).")
+    bullets.append("Reduce-on uses far fewer contacts and stays flat (no drift), exposing no reduce-on instability.")
     bullets.append(
-        "The reduced run stayed flat and did not drift laterally, so this simple case does not expose a reduce-on "
-        "instability."
+        "Solver remark (to be verified): the stop is set by the solver's regularized contact time constant "
+        "(solref), not the raw hydroelastic stiffness."
     )
     return bullets
 
@@ -614,7 +668,15 @@ def _resolution_probe_table(probes: list[ResolutionProbe]) -> str:
 
 
 def _buffer_table(summaries: dict[float, dict[str, dict[str, str]]]) -> str:
-    headers = ["v0 [m/s]", "mode", "overflow", "max rigid contacts", "rigid capacity", "hash failures"]
+    headers = [
+        "v0 [m/s]",
+        "mode",
+        "mean solver contacts",
+        "max rigid contacts",
+        "rigid capacity",
+        "overflow",
+        "hash failures",
+    ]
     rows = []
     for speed in sorted(summaries):
         for mode in rc.MODES:
@@ -625,9 +687,10 @@ def _buffer_table(summaries: dict[float, dict[str, dict[str, str]]]) -> str:
                 [
                     rc.format_number(speed, precision=3),
                     rc.MODE_LABELS.get(mode, mode),
-                    row["buffer_overflow"],
+                    rc.format_number(rc.as_float(row, "mean_solver_force_count"), precision=4),
                     rc.format_number(rc.as_float(row, "max_rigid_contact_count"), precision=4),
                     rc.format_number(rc.as_float(row, "rigid_contact_capacity"), precision=4),
+                    row["buffer_overflow"],
                     rc.format_number(rc.as_float(row, "max_reduction_hashtable_failures"), precision=4),
                 ]
             )
@@ -648,20 +711,21 @@ def render_html_report(
     panels = [
         rc.TabPanel(
             "Figure 1",
-            "<h2>Figure 1: stopping response vs initial speed</h2>\n"
-            "<p>Points only: each marker is one completed run. The black points are the analytic Coulomb "
-            "reference.</p>\n" + _figure_stopping_response(summaries),
+            "<h2>Figure 1: primary measurables vs time</h2>\n"
+            "<p>Directly measured primary quantities for one run, with the analytic Coulomb reference.</p>\n"
+            + _figure_time_history(runs, summaries, selected_speed=selected_speed),
         ),
         rc.TabPanel(
             "Figure 2",
-            "<h2>Figure 2: representative time history</h2>\n"
-            + _figure_time_history(runs, summaries, selected_speed=selected_speed),
+            "<h2>Figure 2: additional response vs initial speed</h2>\n"
+            "<p>Derived stop scalars (vs the Coulomb reference) and settled-geometry residuals. Points only: each "
+            "marker is one completed run.</p>\n" + _figure_additional(summaries),
         ),
         rc.TabPanel(
             "Figure 3",
             "<h2>Figure 3: contact reduction and buffer sanity</h2>\n"
-            "<p>Contact counts use a log scale because reduce off and reduce on differ by roughly two orders of "
-            "magnitude.</p>\n" + _figure_contact_counts(summaries),
+            "<p>Per-run solver and rigid contact counts with the contact-buffer validity gates.</p>\n"
+            + _figure_contact_counts(summaries),
         ),
         rc.TabPanel(
             "Figure 4",
@@ -673,8 +737,7 @@ def render_html_report(
         [
             f"<h1>{rc.escape(PAGE_TITLE)}</h1>",
             '<p class="lede">This report checks whether reducing hydroelastic contacts preserves a simple Coulomb '
-            "sliding response for a cube sliding flat on a fixed plate. It is a record of the hypothesis, the "
-            "measured quantities, and the outcome from the generated CSVs.</p>",
+            "sliding response for a cube sliding flat on a fixed plate.</p>",
             '<div class="facts">',
             "<div><strong>Cube</strong>100 mm side, 0.8 kg</div>",
             "<div><strong>Plate</strong>500 x 500 x 400 mm</div>",
@@ -684,28 +747,22 @@ def render_html_report(
             "<div><strong>Run</strong>0.25 s, 120 logged frames/s, 4 substeps/frame</div>",
             "</div>",
             "<h2>Reference</h2>",
-            "<p>Rigid-body Coulomb sliding, with no compliant or hydroelastic model needed: a block of initial "
-            "speed v0 under friction coefficient mu decelerates at mu*g, stopping in t = v0/(mu*g) after travel "
-            "d = v0^2/(2*mu*g). This analytic result is the reference; the dense reduce-off run is shown for "
-            "comparison, not as ground truth.</p>",
+            "<p>Rigid-body Coulomb sliding: a block of speed v0 under friction mu decelerates at mu*g, stopping "
+            "in t = v0/(mu*g) after travel d = v0^2/(2*mu*g).</p>",
             "<h2>Hypothesis</h2>",
             "<p>For flat-on-flat sliding with no spin and no applied force, reduce on should match reduce off in "
             "stopping time, travel distance, horizontal solver impulse, and settled geometry while using fewer "
             "solver contact entries.</p>",
             "<h2>Measured Quantities</h2>",
             "<ul>",
-            "<li>Cube horizontal speed, stopping time, and travel distance.</li>",
-            "<li>Solver force and torque on the cube, plus a logged-force horizontal impulse estimate.</li>",
-            "<li>Final lateral drift, final tilt, and geometric penetration depth.</li>",
-            "<li>Solver contact count, rigid contact count, buffer overflow state, and reduction hashtable "
-            "failures.</li>",
-            "<li>Analytic Coulomb stop time and stop distance from the initial speed, friction coefficient, and "
-            "gravity.</li>",
+            "<li><strong>Primary:</strong> solver force and torque on the cube; cube horizontal speed and travel "
+            "distance; the analytic Coulomb stop time and distance reference.</li>",
+            "<li><strong>Secondary:</strong> derived stopping time and stop travel; final lateral drift, final "
+            "tilt, and penetration depth; solver and rigid contact count, buffer overflow, and reduction "
+            "hashtable failures.</li>",
             "</ul>",
             "<h2>Result</h2>",
             f"<ul>\n{rc.bullet_list(_result_bullets(summaries))}\n</ul>",
-            "<p>Stop distance is the cleaner scalar for the low-speed cases because stop time is quantized by the "
-            "120 Hz logging interval and the 0.005 m/s stop threshold.</p>",
             "<h2>Figures</h2>",
             rc.figure_tabs(panels),
             "<h2>Summary Table</h2>",

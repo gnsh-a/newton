@@ -49,6 +49,19 @@ Name hypothesis records as `H<number>_<experiment_name>_hypothesis.md`. The repo
 - Result
 - Notes / next hypotheses
 
+## Report Figure And Table Conventions
+
+- Figure 1 — primary: the main directly-measured quantities for the hypothesis,
+  shown with the analytic / closed-form reference. Directly measured, not derived.
+- Figure 2 — additional: secondary quantities (derived scalars, settled-geometry
+  residuals such as drift, tilt, penetration).
+- Figure 3 — checks: contact counts, buffer utilization, and validity gates,
+  rendered as a table rather than plots.
+- Split the measured-quantities list into primary and secondary, where the
+  primary items are exactly the Figure 1 quantities.
+- Lay plots out in a single vertical column, and show reference lines in the
+  legend.
+
 ## Writing the HTML Report
 
 Report scripts live in `tools/<experiment_name>_report.py` and read the CSVs the

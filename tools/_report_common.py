@@ -39,6 +39,30 @@ MODE_LABELS: dict[str, str] = {"unreduced": "reduce off", "reduced": "reduce on"
 MODE_COLORS: dict[str, str] = {"unreduced": "#2563eb", "reduced": "#f97316"}
 REFERENCE_COLOR = "#111827"
 
+# Mode palette used when a single selector group is shown (a group-overlay chart
+# colors by group, but recolors by mode once one group is isolated).
+SOLO_MODE_COLORS: dict[str, str] = {"unreduced": "#2563eb", "reduced": "#dc2626"}
+
+# Qualitative palette for distinguishing selector groups (e.g. one color per
+# velocity) when several groups are overlaid in a single chart.
+GROUP_COLORS: tuple[str, ...] = (
+    "#2563eb",
+    "#f97316",
+    "#16a34a",
+    "#9333ea",
+    "#dc2626",
+    "#0891b2",
+    "#ca8a04",
+    "#db2777",
+)
+
+
+def group_color(index: int) -> str:
+    """Return a stable group color by index, cycling through :data:`GROUP_COLORS`."""
+
+    return GROUP_COLORS[index % len(GROUP_COLORS)]
+
+
 # --------------------------------------------------------------------------- #
 # Plot model.
 # --------------------------------------------------------------------------- #
@@ -55,7 +79,16 @@ class Series:
         color: Stroke/marker color as a CSS color string.
         draw_line: Connect the points with a polyline.
         draw_marker: Draw a circular marker at each point.
-        dash: Render the line dashed when set to any truthy value, else solid.
+        dash: Line style. A Plotly dash keyword (``"dot"``/``"dash"``/``"solid"``/
+            ``"longdash"``/``"dashdot"``) is used verbatim; any other truthy value
+            renders a generic dash; ``None`` is solid.
+        group: Optional selector group key (e.g. ``"v0 = 1 m/s"``). When the
+            :class:`Figure` sets ``selector``, a dropdown shows/hides traces by
+            this key. Series with ``group=None`` are always visible.
+        solo_color: Color used when this series' group is the only one selected
+            in the dropdown (e.g. a mode color). The dropdown recolors to it on a
+            single-group view and restores :attr:`color` for "All". ``None`` keeps
+            :attr:`color` in every view.
     """
 
     xs: list[float]
@@ -65,6 +98,8 @@ class Series:
     draw_line: bool = True
     draw_marker: bool = False
     dash: str | None = None
+    group: str | None = None
+    solo_color: str | None = None
 
 
 @dataclass(frozen=True)
@@ -84,8 +119,18 @@ class Figure:
         height: Chart height in pixels.
         hlines: Dashed horizontal reference lines as ``(value, label, color)``,
             drawn with the label right-aligned at the line.
+        vlines: Dashed vertical reference lines as ``(value, label, color)``,
+            drawn with the label at the top of the line.
         xbands: Shaded vertical regions as ``(low, high, label, color)``.
         ybands: Shaded horizontal regions as ``(low, high, label, color)``.
+        selector: When set, render a dropdown labelled with this text that filters
+            traces by their :attr:`Series.group`. The dropdown offers "All" (every
+            group overlaid) plus one option per group; picking a group shows only
+            that group's traces plus any ungrouped series. No effect if no series
+            carry a group.
+        selector_default: Group to show on load. ``None`` starts on "All"; set it
+            to a representative group (e.g. for a busy time-history) so the page
+            opens on one condition with the others a dropdown away.
     """
 
     title: str
@@ -99,8 +144,11 @@ class Figure:
     width: int = 760
     height: int = 300
     hlines: tuple[tuple[float, str, str], ...] = ()
+    vlines: tuple[tuple[float, str, str], ...] = ()
     xbands: tuple[tuple[float, float, str, str], ...] = ()
     ybands: tuple[tuple[float, float, str, str], ...] = ()
+    selector: str | None = None
+    selector_default: str | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -285,6 +333,53 @@ _PLOT_IDS = itertools.count(1)
 
 _BAND_LABEL_COLOR = "#5f6b7a"
 
+_PLOTLY_DASHES = frozenset({"solid", "dot", "dash", "longdash", "dashdot", "longdashdot"})
+
+
+def _plotly_dash(dash: str | None) -> str:
+    """Map a :attr:`Series.dash` value to a Plotly dash keyword."""
+
+    if not dash:
+        return "solid"
+    return dash if dash in _PLOTLY_DASHES else "dash"
+
+
+def _selector_groups(fig: Figure) -> list[str]:
+    """Ordered, de-duplicated group keys among the figure's series."""
+
+    groups: list[str] = []
+    for plot_series in fig.series:
+        if plot_series.group is not None and plot_series.group not in groups:
+            groups.append(plot_series.group)
+    return groups
+
+
+def _initial_visible(fig: Figure, groups: list[str]) -> list[bool]:
+    """Initial per-trace visibility honoring ``selector_default``.
+
+    With no selector default (or none matching), every trace is visible ("All").
+    Otherwise only the default group's traces plus ungrouped series start visible.
+    """
+
+    default = fig.selector_default
+    if not fig.selector or not groups or default not in groups:
+        return [True] * len(fig.series)
+    return [plot_series.group in (default, None) for plot_series in fig.series]
+
+
+def _initial_colors(fig: Figure, groups: list[str]) -> list[str]:
+    """Initial per-trace color honoring ``selector_default``.
+
+    With the dropdown on "All" (or no default), every trace uses its base color
+    (e.g. one color per group). When it opens on a single group, that group's
+    traces take their :attr:`Series.solo_color` (e.g. a per-mode color).
+    """
+
+    default = fig.selector_default
+    if not fig.selector or not groups or default not in groups:
+        return [plot_series.color for plot_series in fig.series]
+    return [plot_series.solo_color or plot_series.color for plot_series in fig.series]
+
 
 def _clean(values: list[float], *, positive_only: bool = False) -> list[float | None]:
     """Map non-finite (and, for log axes, non-positive) values to ``None`` gaps."""
@@ -302,29 +397,34 @@ def _clean(values: list[float], *, positive_only: bool = False) -> list[float | 
 def _plotly_traces(fig: Figure) -> list[dict]:
     """Build the Plotly trace list for ``fig``."""
 
+    groups = _selector_groups(fig)
+    visible = _initial_visible(fig, groups)
+    colors = _initial_colors(fig, groups)
     traces: list[dict] = []
-    for plot_series in fig.series:
+    for index, plot_series in enumerate(fig.series):
         modes = []
         if plot_series.draw_line:
             modes.append("lines")
         if plot_series.draw_marker:
             modes.append("markers")
-        traces.append(
-            {
-                "type": "scatter",
-                "x": _clean(plot_series.xs),
-                "y": _clean(plot_series.ys, positive_only=fig.log_y),
-                "mode": "+".join(modes) if modes else "markers",
-                "name": plot_series.label,
-                "line": {
-                    "color": plot_series.color,
-                    "width": 2.2,
-                    "dash": "dash" if plot_series.dash else "solid",
-                },
-                "marker": {"color": plot_series.color, "size": 7, "line": {"color": "#ffffff", "width": 1}},
-                "connectgaps": False,
-            }
-        )
+        color = colors[index]
+        trace = {
+            "type": "scatter",
+            "x": _clean(plot_series.xs),
+            "y": _clean(plot_series.ys, positive_only=fig.log_y),
+            "mode": "+".join(modes) if modes else "markers",
+            "name": plot_series.label,
+            "line": {
+                "color": color,
+                "width": 2.2,
+                "dash": _plotly_dash(plot_series.dash),
+            },
+            "marker": {"color": color, "size": 7, "line": {"color": "#ffffff", "width": 1}},
+            "connectgaps": False,
+        }
+        if not visible[index]:
+            trace["visible"] = False
+        traces.append(trace)
     return traces
 
 
@@ -334,6 +434,11 @@ def _plotly_layout(fig: Figure) -> dict:
     x_low, x_high = fig.x_range
     if x_high <= x_low:
         x_high = x_low + 1.0
+    # Keep vertical reference lines in view, mirroring the hline y-range logic.
+    x_ref_values = list(finite([v for v, _label, _color in fig.vlines]))
+    if x_ref_values:
+        x_low = min(x_low, *x_ref_values)
+        x_high = max(x_high, *x_ref_values)
 
     xaxis: dict = {
         "title": {"text": fig.xlabel},
@@ -470,7 +575,35 @@ def _plotly_layout(fig: Figure) -> dict:
                 }
             )
 
-    return {
+    for value, label, color in fig.vlines:
+        shapes.append(
+            {
+                "type": "line",
+                "yref": "paper",
+                "y0": 0,
+                "y1": 1,
+                "xref": "x",
+                "x0": value,
+                "x1": value,
+                "line": {"color": color, "width": 1.3, "dash": "dash"},
+            }
+        )
+        if label:
+            annotations.append(
+                {
+                    "yref": "paper",
+                    "y": 0.98,
+                    "xref": "x",
+                    "x": value,
+                    "text": label,
+                    "showarrow": False,
+                    "yanchor": "top",
+                    "xanchor": "right",
+                    "font": {"size": 11, "color": color},
+                }
+            )
+
+    layout: dict = {
         "title": {"text": fig.title, "font": {"size": 15}, "x": 0.5, "xanchor": "center"},
         "xaxis": xaxis,
         "yaxis": yaxis,
@@ -497,6 +630,77 @@ def _plotly_layout(fig: Figure) -> dict:
         "hovermode": "closest",
         "showlegend": True,
     }
+    _add_group_selector(fig, layout)
+    return layout
+
+
+def _add_group_selector(fig: Figure, layout: dict) -> None:
+    """Attach a Plotly dropdown that filters traces by :attr:`Series.group`.
+
+    The "All" option overlays every group; each group option shows only its own
+    traces plus any ungrouped (``group is None``) series, which stay visible in
+    every view. No-op when ``fig.selector`` is unset or no series carry a group.
+    """
+
+    if not fig.selector:
+        return
+    groups = _selector_groups(fig)
+    if not groups:
+        return
+
+    n = len(fig.series)
+    base_colors = [plot_series.color for plot_series in fig.series]
+    solo_colors = [plot_series.solo_color or plot_series.color for plot_series in fig.series]
+    has_solo = any(plot_series.solo_color for plot_series in fig.series)
+
+    def _button(label: str, visible: list[bool], colors: list[str]) -> dict:
+        # Recolor on selection only when some series define a solo color;
+        # otherwise leave colors untouched so existing charts are unchanged.
+        restyle: dict = {"visible": visible}
+        if has_solo:
+            restyle["line.color"] = colors
+            restyle["marker.color"] = colors
+        return {"label": label, "method": "restyle", "args": [restyle]}
+
+    buttons = [_button("All", [True] * n, base_colors)]
+    for group in groups:
+        visible = [plot_series.group in (group, None) for plot_series in fig.series]
+        buttons.append(_button(group, visible, solo_colors))
+
+    # Highlight the button matching selector_default (else "All" at index 0).
+    active = groups.index(fig.selector_default) + 1 if fig.selector_default in groups else 0
+
+    layout["updatemenus"] = [
+        {
+            "type": "dropdown",
+            "direction": "down",
+            "showactive": True,
+            "active": active,
+            "x": 1.0,
+            "xanchor": "right",
+            "y": 1.16,
+            "yanchor": "bottom",
+            "pad": {"t": 2, "r": 2},
+            "bgcolor": "#ffffff",
+            "bordercolor": "#d8dee8",
+            "font": {"size": 12},
+            "buttons": buttons,
+        }
+    ]
+    layout["annotations"].append(
+        {
+            "xref": "paper",
+            "yref": "paper",
+            "x": 0.0,
+            "y": 1.16,
+            "xanchor": "left",
+            "yanchor": "bottom",
+            "text": fig.selector,
+            "showarrow": False,
+            "font": {"size": 12, "color": _BAND_LABEL_COLOR},
+        }
+    )
+    layout["margin"]["t"] = 88
 
 
 def render_figure(fig: Figure) -> str:

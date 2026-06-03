@@ -36,6 +36,11 @@ SUMMARY_COLUMNS = (
     "spin_stop_time_s",
     "final_speed_m_per_s",
     "mean_solver_force_count",
+    "max_rigid_contact_count",
+    "rigid_contact_capacity",
+    "max_reduction_hashtable_failures",
+    "final_y_drift_m",
+    "coupled_stopped",
     "buffer_overflow",
 )
 
@@ -94,6 +99,11 @@ def _summary_row(*, epsilon0: float, mode: str, late_epsilon: float, force_count
         "spin_stop_time_s": "0.19",
         "final_speed_m_per_s": "0.01",
         "mean_solver_force_count": str(force_count),
+        "max_rigid_contact_count": str(force_count),
+        "rigid_contact_capacity": "131072",
+        "max_reduction_hashtable_failures": "0",
+        "final_y_drift_m": "0.0001",
+        "coupled_stopped": "true",
         "buffer_overflow": "false",
     }
 
@@ -126,11 +136,13 @@ class TestSlidingSpinningCylinderReport(unittest.TestCase):
             self.assertTrue(html_path.exists())
             self.assertTrue((output_dir / report_tool.HYPOTHESIS_RECORD_NAME).exists())
             report = html_path.read_text(encoding="utf-8")
-            self.assertIn("H5: Sliding-Spinning Cylinder Contact Reduction", report)
+            self.assertIn("H5: Sliding-Spinning Cylinder", report)
             self.assertIn("Figure 1", report)
             self.assertIn("Figure 2", report)
             self.assertIn("Figure 3", report)
+            self.assertIn("Figure 4", report)
             self.assertIn("Farkas analytic", report)
+            self.assertIn("Farkas attractor eps* = 0.653", report)
             self.assertIn("reduce on", report)
             self.assertIn("Generated from", report)
 

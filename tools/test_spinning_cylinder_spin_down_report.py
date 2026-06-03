@@ -32,6 +32,10 @@ SUMMARY_COLUMNS = (
     "mean_solver_tz_active_Nm",
     "mean_abs_solver_tz_active_Nm",
     "mean_solver_force_count",
+    "max_rigid_contact_count",
+    "rigid_contact_capacity",
+    "max_reduction_hashtable_failures",
+    "final_lateral_drift_m",
 )
 
 
@@ -85,6 +89,10 @@ def _summary_row(*, omega0: float, mode: str, force_count: int, stop_time: float
         "mean_solver_tz_active_Nm": str(torque),
         "mean_abs_solver_tz_active_Nm": str(abs(torque)),
         "mean_solver_force_count": str(force_count),
+        "max_rigid_contact_count": str(force_count),
+        "rigid_contact_capacity": "131072",
+        "max_reduction_hashtable_failures": "0",
+        "final_lateral_drift_m": "0.0001",
     }
 
 
@@ -121,7 +129,7 @@ class TestSpinningCylinderSpinDownReport(unittest.TestCase):
             self.assertTrue(html_path.exists())
             self.assertTrue((output_dir / report_tool.HYPOTHESIS_RECORD_NAME).exists())
             report = html_path.read_text(encoding="utf-8")
-            self.assertIn("H4: Spinning Cylinder Yaw-Torque Contact Reduction", report)
+            self.assertIn("H4: Spinning Cylinder Spin-Down", report)
             self.assertIn("Figure 1", report)
             self.assertIn("Figure 2", report)
             self.assertIn("Figure 3", report)
