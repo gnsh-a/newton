@@ -1,0 +1,19 @@
+# Physical inputs for the sphere_box_hydro example: a compliant sphere dropped
+# onto a stiffer, fixed compliant box, solved with SolverMuJoCo and hydroelastic
+# (SDF) contact. The matched-modulus mapping kh = E / H (H = elastic-foundation
+# depth: sphere -> radius, box -> min half-size) is derived in the example.
+sphere:
+  radius: 0.05                       # m   -> foundation depth H = R
+  hydroelastic_modulus: 1.0e7        # Pa
+  initial_position: [0.0, 0.0, 0.2]  # m, world; z above the box top (0.1) so it falls
+
+box:
+  full_size: [0.2, 0.2, 0.2]    # m   half sizes = full / 2; H = min(full) / 2
+  hydroelastic_modulus: 1.0e8   # Pa
+
+material:
+  friction: 0.0
+
+mesh:
+  sdf_target_voxel_size: 0.005          # m
+  sdf_narrow_band_range: [-0.01, 0.01]  # m
