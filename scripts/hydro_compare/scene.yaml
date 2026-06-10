@@ -1,0 +1,46 @@
+# Frozen compliant-compliant contact: a soft sphere pressed into a stiffer box.
+#
+# This file holds ONLY physical + meshing inputs. The matched-modulus mapping (kh = E/H),
+# the frozen poses, and the analytic reference are DERIVED in scene.py.
+#
+# Read by scene.py (imported by all scripts). Run commands live in each script header:
+#   drake_dump.py  -> `bazel run` in drake-sap (uses bazel-built pydrake)
+#   newton_dump.py / compare.py / view_surface.py -> `uv run` in ~/work/newton-sap
+
+sphere:
+  radius: 0.05                  # m    -> foundation depth H_sphere = R
+  hydroelastic_modulus: 1.0e7   # Pa   (E_sphere)
+
+box:
+  full_size: [0.2, 0.2, 0.2]    # m    Drake Box() full sizes; Newton half = /2; H_box = min/2
+  hydroelastic_modulus: 1.0e8   # Pa   (E_box)
+  center: [0.0, 0.0, 0.0]       # m, world (top face at +full_size_z/2)
+
+contact:
+  penetration_x: 0.005          # m    sphere lowered into the box top by this amount
+
+material:
+  friction: 0.0
+  margin: 0.0                   # keep 0 so H_eff = H (clean kh = E/H)
+
+# Single knob for COMPARABLE triangle sizes across engines: Drake resolution_hint AND
+# Newton sdf_target_voxel_size are both set to this. Drake snaps to refinement levels
+# (approximate), Newton is ~continuous -- so expect "about the same", not identical.
+mesh:
+  target_edge: 0.005            # m  -> Newton sdf_target_voxel_size
+  drake_scale: 1.3              # Drake resolution_hint = target_edge * drake_scale.
+                                # NOTE: Drake is QUANTIZED (sphere refinement levels), so within
+                                # a level this is inert -- Drake's median edge is pinned ~3.2 mm here.
+  newton_scale: 0.76            # Newton sdf_target_voxel_size = target_edge * newton_scale.
+                                # Newton is continuous, so THIS is the knob that matches Drake's
+                                # pinned median (newton median ~= 0.84 * voxel).
+
+drake:
+  representation: triangle      # informational (drake_dump uses kTriangle)
+
+newton:
+  sdf_narrow_band_range: [-0.01, 0.01]  # m
+  gap: 0.0
+  rigid_contact_max: 6000
+
+output_dir: /home/ganesharivoli/work/newton-sap/scripts/hydro_compare/out

@@ -1,0 +1,25 @@
+# Dedicated uv project for the Drake side of the frozen-contact cross-check.
+#
+# Replaces the old bazel + Drake-source build: drake_dump.py now runs on the
+# pydrake PyPI wheel, so no Drake checkout is required. This env also covers
+# compare.py and view_surface.py (numpy / pyyaml / matplotlib). newton_dump.py
+# is NOT here -- it needs newton + warp + CUDA and runs in the newton-sap env.
+#
+# Run (from this directory):
+#   uv run python drake_dump.py   --scene scene.yaml --mesh
+#   uv run python compare.py      --scene scene.yaml
+#   uv run python view_surface.py --scene scene.yaml
+[project]
+name = "contact-surface-xcheck"
+version = "0.0.0"
+description = "Drake side of the Drake-vs-Newton frozen-contact cross-check (pydrake wheel)."
+requires-python = "==3.12.*"
+# drake pulls in numpy, matplotlib and PyYAML transitively, which is everything
+# drake_dump.py / compare.py / view_surface.py need -- so drake is the only dep.
+dependencies = [
+    "drake==1.53.0",
+]
+
+[tool.uv]
+# Keep this project's lock independent of the parent newton-sap workspace.
+package = false
