@@ -1276,7 +1276,11 @@ def mc_iterate_voxel_vertices(
             v_diff = valA - valB
 
         corner_vals[i] = v_diff
-        corner_sdf_vals[i] = valA
+        # Cache the total overlap sdf_A + sdf_B so the exported contact_distance
+        # equals -(d_A + d_B) for any kh pair.  On the rim branch the locus is
+        # sdf_A = sdf_B, so the sum equals 2*valA there, matching the prior
+        # single-shape depth; at equal kh it is identical to the old doubling.
+        corner_sdf_vals[i] = valA + valB
 
         if v_diff < 0.0:
             cube_idx |= wp.uint8(1) << wp.uint8(i)
@@ -1380,11 +1384,12 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
                 c_stiffness = wp.static(margin_contact_area) * k_eff
 
             # Create ContactData for the writer function
-            # contact_distance = 2 * depth (depth is negative for penetrating)
+            # contact_distance = sdf_A + sdf_B = -(d_A + d_B), the total overlap
+            # (depth is the summed signed distance, negative for penetrating)
             contact_data = ContactData()
             contact_data.contact_point_center = pos_world
             contact_data.contact_normal_a_to_b = normal_world
-            contact_data.contact_distance = 2.0 * depth
+            contact_data.contact_distance = depth
             contact_data.radius_eff_a = 0.0
             contact_data.radius_eff_b = 0.0
             contact_data.margin_a = 0.0

@@ -823,12 +823,12 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 pos_world = wp.transform_point(transform_b, position)
 
                 # Create ContactData struct
-                # contact_distance = 2 * depth (depth is already negative for penetrating)
-                # This gives negative contact_distance for penetrating contacts
+                # contact_distance = sdf_A + sdf_B = -(d_A + d_B), the total overlap
+                # (depth is the summed signed distance, already negative for penetrating)
                 contact_data = ContactData()
                 contact_data.contact_point_center = pos_world
                 contact_data.contact_normal_a_to_b = normal_world
-                contact_data.contact_distance = 2.0 * depth  # depth is negative = penetrating
+                contact_data.contact_distance = depth  # depth is negative = penetrating
                 contact_data.radius_eff_a = 0.0
                 contact_data.radius_eff_b = 0.0
                 contact_data.margin_a = 0.0
@@ -854,7 +854,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_data = ContactData()
                 contact_data.contact_point_center = anchor_pos_world
                 contact_data.contact_normal_a_to_b = anchor_normal_world
-                contact_data.contact_distance = -2.0 * anchor_depth  # anchor_depth is positive magnitude
+                contact_data.contact_distance = -anchor_depth  # anchor_depth is positive magnitude
                 contact_data.radius_eff_a = 0.0
                 contact_data.radius_eff_b = 0.0
                 contact_data.margin_a = 0.0

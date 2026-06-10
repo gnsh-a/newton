@@ -1047,8 +1047,8 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
         test.assertGreater(len(instance_depths), 0, f"Case {i} should have penetrating contacts (negative depth)")
 
-        # x2 because depth is distance to isosurface; use |depth| for magnitude
-        measured = 2.0 * np.mean(-instance_depths)
+        # depth is the total overlap sdf_A + sdf_B; use |depth| for magnitude
+        measured = np.mean(-instance_depths)
         ratio = measured / expected
 
         # We expect a ratio > 1 due to non-uniform pressure distribution.
@@ -1058,6 +1058,67 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         test.assertLess(
             ratio, 1.2, f"Case {i}: ratio {ratio:.3f} too high (measured={measured:.6f}, expected={expected:.6f})"
         )
+
+
+def test_sdf_resolution_invariance(test, device):
+    """Hydroelastic normal force must not depend on SDF voxel resolution.
+
+    Two boxes with **unequal** ``kh`` are kinematically placed with a fixed 5 mm
+    face overlap and run through the collision pipeline only.  Swapping the two
+    shapes' ``sdf_target_voxel_size`` is a zero physical change, so the
+    reconstructed normal force must be (nearly) invariant.
+
+    Regresses the bug where ``contact_distance`` was sampled from a single
+    shape's SDF and doubled, scaling the force by ``2 * k_a / (k_a + k_b)`` with
+    the direction selected by which shape carried the finer voxels (a ~3.8x
+    force swing on the buggy path for this kh pair).
+    """
+    delta = 0.005  # 5 mm overlap
+    top_h = (0.04, 0.04, 0.05)
+    bot_h = (0.06, 0.06, 0.05)
+    kh_bot, kh_top = 1e8, 4e8
+    fine, coarse = 0.0005, 0.0012  # sdf_target_voxel_size [m]
+
+    def make_cfg(kh, vox):
+        return newton.ModelBuilder.ShapeConfig(
+            is_hydroelastic=True,
+            kh=kh,
+            sdf_target_voxel_size=vox,
+            sdf_narrow_band_range=(-0.02, 0.02),
+            sdf_texture_format="float32",
+            gap=0.01,
+        )
+
+    def measure(vox_bot, vox_top):
+        builder = newton.ModelBuilder()
+        bot = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -bot_h[2]), wp.quat_identity()))
+        builder.add_shape_box(bot, hx=bot_h[0], hy=bot_h[1], hz=bot_h[2], cfg=make_cfg(kh_bot, vox_bot))
+        top = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, top_h[2] - delta), wp.quat_identity()))
+        builder.add_shape_box(top, hx=top_h[0], hy=top_h[1], hz=top_h[2], cfg=make_cfg(kh_top, vox_top))
+        model = builder.finalize(device=device)
+        state = model.state()
+        pipeline = newton.CollisionPipeline(
+            model, rigid_contact_max=400000, sdf_hydroelastic_config=HydroelasticSDF.Config()
+        )
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        return abs(_compute_net_force(contacts, model, state)[2])
+
+    # Identical physics; only which shape carries the finer SDF voxels differs.
+    f_stiff_fine = measure(coarse, fine)  # stiff shape (kh_top) finer
+    f_stiff_coarse = measure(fine, coarse)  # stiff shape (kh_top) coarser
+
+    test.assertGreater(f_stiff_fine, 0.0, "Expected a penetrating normal force (stiff shape fine)")
+    test.assertGreater(f_stiff_coarse, 0.0, "Expected a penetrating normal force (stiff shape coarse)")
+
+    ratio = f_stiff_fine / f_stiff_coarse
+    test.assertAlmostEqual(
+        ratio,
+        1.0,
+        delta=0.15,
+        msg=f"SDF resolution changed the normal force by {ratio:.2f}x "
+        f"(stiff-fine={f_stiff_fine:.1f} N, stiff-coarse={f_stiff_coarse:.1f} N); expected invariance",
+    )
 
 
 # --- Test class ---
@@ -1170,6 +1231,14 @@ add_function_test(
     TestHydroelastic,
     "test_mujoco_hydroelastic_penetration_depth",
     test_mujoco_hydroelastic_penetration_depth,
+    devices=cuda_devices,
+)
+
+# SDF voxel-resolution invariance regression test (unequal kh)
+add_function_test(
+    TestHydroelastic,
+    "test_sdf_resolution_invariance",
+    test_sdf_resolution_invariance,
     devices=cuda_devices,
 )
 
