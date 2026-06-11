@@ -7,10 +7,9 @@ stiffness * penetration.
 
 Run (the newton-sap uv env; requires a CUDA GPU -- finalize() raises on CPU):
     cd ~/work/newton-sap
-    uv run --no-sync python ~/work/newton-sap/scripts/hydro_compare/newton_dump.py \
-        --scene ~/work/newton-sap/scripts/hydro_compare/scene.yaml [--mesh]
+    uv run --no-sync python scripts/hydro_compare/experiments/newton_dump.py [--mesh]
   Must run in the newton-sap uv env so `newton`/`warp` import. --mesh also writes
-  out/newton_surface.npz (iso-surface triangles) for view_surface.py.
+  experiments/out/newton_surface.npz (iso-surface triangles) for view_surface.py.
 """
 import argparse
 import json
@@ -77,13 +76,15 @@ def main():
         csd = pipeline.hydroelastic_sdf.get_contact_surface()
         nf = int(csd.face_contact_count.numpy()[0])
         tris = csd.contact_surface_point.numpy()[:3 * nf].reshape(nf, 3, 3)  # 3 world verts/face
-        fdepth = csd.contact_surface_depth.numpy()[:nf]                      # per-face penetration
-        # depth is the SDF of shape_b (col1 of the pair): mc reads corner_sdf_vals from
-        # sdf_data_b, so it is ONE body's penetration phi_b, not the total. The shared
-        # equal-pressure surface value is p = kh_b * |depth| -- pair shape_b's modulus.
+        fdepth = csd.contact_surface_depth.numpy()[:nf]                      # per-face TOTAL penetration
+        # contact_surface_depth is now the TOTAL overlap sdf_a + sdf_b (= d_a + d_b), not one
+        # body's phi_b. The shared equal-pressure surface value is therefore p = k_eff*|depth|
+        # with k_eff the series stiffness k_a*k_b/(k_a+k_b) (== kappa); this equals k_b*d_b = k_a*d_a.
         fpair = csd.contact_surface_shape_pair.numpy()[:nf]                  # (shape_a, shape_b)
         kh_all = model.shape_material_kh.numpy()
-        fpress = kh_all[fpair[:, 1]] * np.abs(fdepth)                        # p = kh_b * |depth|
+        kh_a, kh_b = kh_all[fpair[:, 0]], kh_all[fpair[:, 1]]
+        k_eff_face = kh_a * kh_b / (kh_a + kh_b)
+        fpress = k_eff_face * np.abs(fdepth)                                 # p = k_eff * |delta_total|
         os.makedirs(cfg.output_dir, exist_ok=True)
         np.savez(os.path.join(cfg.output_dir, "newton_surface.npz"),
                  tris=tris, depth=fdepth, pressure=fpress)
@@ -99,33 +100,33 @@ def main():
     shape0 = contacts.rigid_contact_shape0.numpy()[:n]
     shape1 = contacts.rigid_contact_shape1.numpy()[:n]
 
-    # --- Witness points -> world (identity rotation => translation-only); recover the
-    #     true signed penetration from contact_distance = 2*depth ---
+    # --- Witness points -> world (identity rotation => translation-only). The exported
+    #     contact_distance is now the TOTAL overlap -(d_a + d_b); witness points are split
+    #     +/-0.5*contact_distance, so (p0w - p1w).(-n) recovers it directly (no /2). ---
     body_t = body_q[:, :3]
     shape_body = model.shape_body.numpy()
     p0w = p0 + body_t[shape_body[shape0]]
     p1w = p1 + body_t[shape_body[shape1]]
-    depth = np.einsum("ij,ij->i", p0w - p1w, -normal) / 2.0
-    mask = depth < 0.0
+    depth_total = np.einsum("ij,ij->i", p0w - p1w, -normal)        # contact_distance = -(d_a+d_b)
+    mask = depth_total < 0.0
     n_pen = int(mask.sum())
     assert n_pen > 0, (
         f"no penetrating contacts (raw count {n}); decrease mesh.target_edge "
         f"(currently {cfg.sdf_target_voxel_size}) or increase contact.penetration_x")
     normal, stiffness = normal[mask], stiffness[mask]
-    p0w, p1w, depth = p0w[mask], p1w[mask], depth[mask]
+    p0w, p1w, depth_total = p0w[mask], p1w[mask], depth_total[mask]
     shape0, shape1 = shape0[mask], shape1[mask]
 
-    # --- Per-contact quantities. depth is the SDF of shape_b (= shape1), i.e. ONE body's
-    #     penetration phi_b, NOT the total. At the equal-pressure surface the shared
-    #     pressure is p = kh_b * |depth| -- pair THAT body's modulus with THAT depth.
-    #     (kappa * |depth| mispairs the SERIES stiffness with a single-body depth and
-    #     under-reports by kh_a/(kh_a+kh_b).) Patch force is the hydroelastic integral
-    #     int p dA = area * p. ---
+    # --- Per-contact quantities. depth_total is the TOTAL penetration d_a+d_b (signed, neg).
+    #     The equal-pressure surface value is p = k_eff*|depth_total| (= k_b*d_b = k_a*d_a);
+    #     this is the series law and is INDEPENDENT of which shape was finer-voxeled. Patch
+    #     force is the hydroelastic integral int p dA = area*p = stiffness*|depth_total|.
+    #     depth keeps the single-body phi_b (signed) for the 1-body diagnostic marker. ---
     kh = model.shape_material_kh.numpy()
     k_eff = (kh[shape0] * kh[shape1]) / (kh[shape0] + kh[shape1])   # series (= surface k_eff)
     area = stiffness / k_eff                                       # stiffness = area * k_eff
-    pressure = kh[shape1] * (-depth)                               # p = kh_b * |depth|
-    depth_total = depth * (kh[shape0] + kh[shape1]) / kh[shape0]   # TOTAL pen. phi_b*(ka+kb)/ka
+    pressure = k_eff * (-depth_total)                             # p = k_eff * |delta_total|
+    depth = depth_total * kh[shape0] / (kh[shape0] + kh[shape1])   # single-body phi_b = d_total*k_a/(k_a+k_b)
     Fn_i = area * pressure                                         # int p dA on the patch
     point_W = 0.5 * (p0w + p1w)
 

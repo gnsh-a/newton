@@ -75,4 +75,4 @@ docs/_static/viser/
 **/*.ipynb_checkpoints/
 
 kbase/*
-scripts/hydro_compare/out/*
+scripts/hydro_compare/**/out/*

@@ -12,9 +12,9 @@ by MultibodyPlant force computation downstream and never by ComputeContactSurfac
 the ContactSurface produced here is identical with or without it.
 
 Run (the dedicated uv project here; uses the pydrake PyPI wheel -- no Drake checkout):
-    cd ~/work/newton-sap/scripts/hydro_compare
-    uv run python drake_dump.py --scene scene.yaml [--mesh]
-  --mesh also writes out/drake_surface.npz (triangle mesh) for view_surface.py.
+    cd ~/work/newton-sap/scripts/hydro_compare      # uv project root (pyproject.toml lives here)
+    uv run python experiments/drake_dump.py [--mesh]
+  --mesh also writes experiments/out/drake_surface.npz (triangle mesh) for view_surface.py.
 """
 import argparse
 import json

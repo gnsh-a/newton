@@ -5,10 +5,10 @@
 # compare.py and view_surface.py (numpy / pyyaml / matplotlib). newton_dump.py
 # is NOT here -- it needs newton + warp + CUDA and runs in the newton-sap env.
 #
-# Run (from this directory):
-#   uv run python drake_dump.py   --scene scene.yaml --mesh
-#   uv run python compare.py      --scene scene.yaml
-#   uv run python view_surface.py --scene scene.yaml
+# Run (from this directory -- the uv project root; scripts now live in experiments/):
+#   uv run python experiments/drake_dump.py   --mesh
+#   uv run python experiments/compare.py
+#   uv run python experiments/view_surface.py
 [project]
 name = "contact-surface-xcheck"
 version = "0.0.0"

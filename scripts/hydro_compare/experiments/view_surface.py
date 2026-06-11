@@ -10,8 +10,8 @@ shallow, so it looks nearly flat).
 
 Run (the newton-sap uv env; run both dumps with --mesh first):
     cd ~/work/newton-sap
-    uv run --no-sync python ~/work/newton-sap/scripts/hydro_compare/view_surface.py [--interactive]
-  Default saves out/contact_surface_3d.png (headless Agg); --interactive opens a
+    uv run --no-sync python scripts/hydro_compare/experiments/view_surface.py [--interactive]
+  Default saves experiments/out/contact_surface_3d.png (headless Agg); --interactive opens a
   rotatable TkAgg window on $DISPLAY instead.
 """
 import argparse
@@ -103,7 +103,7 @@ def main():
     cfg = scene_mod.load_scene(args.scene)
     out = cfg.output_dir
     center_xy = np.asarray(cfg.box_center[:2], float)   # contact axis (x=y=0 here)
-    fig = plt.figure(figsize=(20, 6))
+    fig = plt.figure(figsize=(15, 11))
 
     # --- Drake: actual ComputeContactSurfaces triangles, actual pressure field ---
     d = np.load(os.path.join(out, "drake_surface.npz"))
@@ -111,15 +111,15 @@ def main():
     dtri = verts[tris]                                  # (F,3,3) world triangles
     dpress = vp[tris].mean(axis=1) / 1.0e6              # per-face Drake pressure [MPa]
     L = _drake_refinement_level(cfg.resolution_hint, cfg.R)
-    axd = fig.add_subplot(1, 3, 1, projection="3d")
+    axd = fig.add_subplot(2, 2, 1, projection="3d")
     cd = _add_surface(axd, dtri, dpress, "viridis", 0.3)
     axd.set_title(f"Drake: {len(tris)} tris, L={L} (pressure)")
 
-    # --- Newton: actual marching-cubes triangles, colored by p = kh_b*|depth| (the
+    # --- Newton: actual marching-cubes triangles, colored by p = k_eff*|delta_total| (the
     #     equal-pressure surface value) so panels 1-2 share one pressure scale/colorbar ---
     n = np.load(os.path.join(out, "newton_surface.npz"))
     soup, npress = n["tris"], n["pressure"] / 1.0e6     # per-face Newton pressure [MPa]
-    axn = fig.add_subplot(1, 3, 2, projection="3d")
+    axn = fig.add_subplot(2, 2, 2, projection="3d")
     cn = _add_surface(axn, soup, npress, "viridis", 0.1)
     axn.set_title(f"Newton: {soup.shape[0]} tris, voxel={cfg.sdf_target_voxel_size * 1e3:.1f}mm (pressure)")
 
@@ -132,7 +132,7 @@ def main():
     #     axisymmetric). Each engine is binned on its OWN mesh -- no cross-mesh resampling --
     #     and compared to the closed-form Winkler profile p*(r). The per-engine area-weighted
     #     L2 (vs reference) quantifies the error; the engine-to-engine gap is bounded by their sum. ---
-    axe = fig.add_subplot(1, 3, 3)                            # 2D panel
+    axe = fig.add_subplot(2, 2, 3)                            # 2D panel
     rmax = cfg.reference.patch_radius * 1.1
     rc_d, pbar_d = _radial_profile(dtri, dpress, center_xy, 14, rmax)
     rc_n, pbar_n = _radial_profile(soup, npress, center_xy, 14, rmax)
@@ -146,8 +146,21 @@ def main():
             title=f"radial profile vs reference\narea-wtd L2: drake {dL2:.3g}, newton {nL2:.3g} MPa")
     axe.legend()
 
+    # --- Panel 4: residual of each binned radial profile vs the analytic reference,
+    #     p_bar(r) - p*(r). Flat at zero == exact; sign shows local over/under-pressure.
+    #     Same area-weighted bins as panel 3, so it is the radius-resolved view of the L2. ---
+    axr = fig.add_subplot(2, 2, 4)
+    pref_d = scene_mod.reference_pressure(cfg, rc_d) / 1.0e6
+    pref_n = scene_mod.reference_pressure(cfg, rc_n) / 1.0e6
+    axr.axhline(0.0, color="k", lw=1)
+    axr.plot(rc_d, pbar_d - pref_d, "o-", ms=4, label="drake - reference")
+    axr.plot(rc_n, pbar_n - pref_n, "x--", ms=5, label="newton - reference")
+    axr.set(xlabel="patch radius r [m]", ylabel="pressure residual [MPa]",
+            title="residual vs reference  p̄(r) - p*(r)")
+    axr.legend()
+
     fig.suptitle("Contact-surface pressure (panels 1-2: actual triangles, true scale); "
-                 "panel 3: area-weighted radial profile vs reference")
+                 "panel 3: area-weighted radial profile vs reference; panel 4: residual vs reference")
 
     # --- measure-and-tune: edge-length stats so we can verify "about the same" ---
     ed, en = _edge_stats(verts[tris]), _edge_stats(soup)

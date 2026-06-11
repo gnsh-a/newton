@@ -8,8 +8,7 @@ Writes out/diff.json and out/distributions.png. No mesh resampling.
 
 Run (the newton-sap uv env -- needs numpy+matplotlib+pyyaml; run both dumps first):
     cd ~/work/newton-sap
-    uv run --no-sync python ~/work/newton-sap/scripts/hydro_compare/compare.py \
-        --scene ~/work/newton-sap/scripts/hydro_compare/scene.yaml
+    uv run --no-sync python scripts/hydro_compare/experiments/compare.py
 """
 import argparse
 import json
