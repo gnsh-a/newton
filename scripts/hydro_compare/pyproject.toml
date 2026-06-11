@@ -18,6 +18,7 @@ requires-python = "==3.12.*"
 # drake_dump.py / compare.py / view_surface.py need -- so drake is the only dep.
 dependencies = [
     "drake==1.53.0",
+    "pyvista[jupyter]>=0.48.4",
 ]
 
 [tool.uv]
