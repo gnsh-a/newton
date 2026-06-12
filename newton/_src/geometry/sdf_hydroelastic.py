@@ -599,6 +599,21 @@ class HydroelasticSDF:
             record_tape=False,
         )
 
+        # debug (one-time): report which shape hosts the iso-voxel grid / marching cubes per
+        # pair. Replicates the broadphase swap predicate (voxel_radius_b > voxel_radius_a ->
+        # swap, so post-swap shape_b = finer voxel = MC host). voxel_radius is baked at
+        # finalize(), so this never changes during the sim. Forces a device sync; debug only.
+        if not getattr(self, "_mc_host_printed", False):
+            self._mc_host_printed = True
+            sd = shape_sdf_data.numpy()
+            n_pairs = int(shape_pairs_sdf_sdf_count.numpy()[0])
+            for a, b in shape_pairs_sdf_sdf.numpy()[:n_pairs]:
+                vra, vrb = float(sd["voxel_radius"][a]), float(sd["voxel_radius"][b])
+                host = a if vrb > vra else b
+                tie = "  (tie -> b, no swap)" if vra == vrb else ""
+                print(f"[hydro] pair ({a},{b}): MC host = shape {host}  "
+                      f"voxel_radius a={vra:.4e} b={vrb:.4e}{tie}")
+
         self._broadphase_sdfs(
             shape_sdf_data,
             shape_transform,
