@@ -95,11 +95,11 @@ def _newton_mesh(polys, fpress):
     return m
 
 
-def _add_mesh(pl, row, col, mesh, title, clim, *, scalar_bar):
+def _add_mesh(pl, row, col, mesh, title, clim, *, scalar_bar, show_edges=True):
     """Add one contact-surface mesh exactly as built (native point/cell scalars), true scale."""
     pl.subplot(row, col)
     pl.add_mesh(mesh, scalars=_SCALAR, cmap="viridis", clim=clim,
-                show_edges=True, edge_color="black", line_width=0.3,
+                show_edges=show_edges, edge_color="black", line_width=0.3,
                 show_scalar_bar=scalar_bar,
                 scalar_bar_args=dict(title=_SCALAR, vertical=True,
                                      position_x=0.85, position_y=0.2, height=0.6))
@@ -143,7 +143,7 @@ def main():
     args = ap.parse_args()
 
     cfg = scene_mod.load_scene(args.scene)
-    out = cfg.output_dir
+    out = scene_mod.experiment_dir(cfg, "frozen_compare")
     center_xy = np.asarray(cfg.box_center[:2], float)   # contact axis (x=y=0 here)
 
     # --- Drake: NATIVE indexed surface + per-vertex pressure field (no modification) ---

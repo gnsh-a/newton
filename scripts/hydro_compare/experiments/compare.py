@@ -53,7 +53,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scene", default=scene_mod.default_scene_path())
     cfg = scene_mod.load_scene(ap.parse_args().scene)
-    out = cfg.output_dir
+    out = scene_mod.experiment_dir(cfg, "frozen_compare")
 
     d, dm = _load(out, "drake")
     n, nm = _load(out, "newton")

@@ -28,6 +28,17 @@ def default_scene_path():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "scene.yaml")
 
 
+def experiment_dir(cfg, name):
+    """Per-experiment output subfolder under ``cfg.output_dir`` (created if missing).
+
+    Keeps each study's artifacts separate, e.g. ``out/frozen_compare/`` (the Drake-vs-Newton
+    frozen cross-check: dumps, diff, distributions, 3D surface) and ``out/convergence/``
+    (the Drake mesh-refinement study)."""
+    path = os.path.join(cfg.output_dir, name)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def load_scene(path=None):
     raw = _load_raw(path or default_scene_path())
 

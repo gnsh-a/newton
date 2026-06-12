@@ -31,6 +31,7 @@ def main():
                     help="also write out/newton_surface.npz (actual iso-surface triangles + per-face depth)")
     args = ap.parse_args()
     cfg = scene_mod.load_scene(args.scene)
+    out_dir = scene_mod.experiment_dir(cfg, "frozen_compare")
 
     # --- CUDA device (hydroelastic SDF cannot run on CPU) ---
     wp.init()
@@ -85,8 +86,8 @@ def main():
         kh_a, kh_b = kh_all[fpair[:, 0]], kh_all[fpair[:, 1]]
         k_eff_face = kh_a * kh_b / (kh_a + kh_b)
         fpress = k_eff_face * np.abs(fdepth)                                 # p = k_eff * |delta_total|
-        os.makedirs(cfg.output_dir, exist_ok=True)
-        np.savez(os.path.join(cfg.output_dir, "newton_surface.npz"),
+        os.makedirs(out_dir, exist_ok=True)
+        np.savez(os.path.join(out_dir, "newton_surface.npz"),
                  tris=tris, depth=fdepth, pressure=fpress)
 
     # --- Read per-contact arrays ---
@@ -137,8 +138,8 @@ def main():
     centroid = (Fn_i[:, None] * point_W).sum(0) / Fn_total
 
     # --- Write outputs: per-contact arrays (npz) + aggregates (json) ---
-    os.makedirs(cfg.output_dir, exist_ok=True)
-    np.savez(os.path.join(cfg.output_dir, "newton.npz"),
+    os.makedirs(out_dir, exist_ok=True)
+    np.savez(os.path.join(out_dir, "newton.npz"),
              centroid_W=point_W, area=area, n_hat=normal, depth=depth, depth_total=depth_total,
              stiffness=stiffness, pressure=pressure, Fn_i=Fn_i)
     meta = {
@@ -148,7 +149,7 @@ def main():
         "agg_centroid_W": centroid.tolist(),
         "agg_total_area": float(area.sum()),
     }
-    with open(os.path.join(cfg.output_dir, "newton.json"), "w") as f:
+    with open(os.path.join(out_dir, "newton.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
 

@@ -51,6 +51,7 @@ def main():
                     help="also write out/drake_surface.npz (mesh + per-vertex pressure) for view_surface.py")
     args = ap.parse_args()
     cfg = scene_mod.load_scene(args.scene)
+    out_dir = scene_mod.experiment_dir(cfg, "frozen_compare")
 
     # --- Build the scene: two compliant geometries on SEPARATE frames ---
     sg = SceneGraph()
@@ -89,8 +90,8 @@ def main():
         tris = np.array([[t.vertex(0), t.vertex(1), t.vertex(2)]
                          for t in mesh.triangles()], dtype=int)
         vp = np.array([float(field.EvaluateAtVertex(v)) for v in range(mesh.num_vertices())])
-        os.makedirs(cfg.output_dir, exist_ok=True)
-        np.savez(os.path.join(cfg.output_dir, "drake_surface.npz"), verts=verts, tris=tris, vp=vp)
+        os.makedirs(out_dir, exist_ok=True)
+        np.savez(os.path.join(out_dir, "drake_surface.npz"), verts=verts, tris=tris, vp=vp)
 
     # --- Per-face SAP inputs, faithful to discrete_update_manager.cc:885-995 ---
     rows = []
@@ -120,8 +121,8 @@ def main():
     centroid = (fn0[:, None] * centroid_W).sum(0) / Fn_total
 
     # --- Write outputs: per-face arrays (npz) + aggregates/ids (json) ---
-    os.makedirs(cfg.output_dir, exist_ok=True)
-    np.savez(os.path.join(cfg.output_dir, "drake.npz"),
+    os.makedirs(out_dir, exist_ok=True)
+    np.savez(os.path.join(out_dir, "drake.npz"),
              centroid_W=centroid_W, area=area, n_hat=n_hat, p0=p0,
              g=g, k=k, phi0=phi0, fn0=fn0)
     meta = {
@@ -132,7 +133,7 @@ def main():
         "agg_centroid_W": centroid.tolist(),
         "agg_total_area": float(area.sum()),
     }
-    with open(os.path.join(cfg.output_dir, "drake.json"), "w") as f:
+    with open(os.path.join(out_dir, "drake.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
 
