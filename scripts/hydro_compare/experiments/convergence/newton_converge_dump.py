@@ -53,11 +53,16 @@ def _surface(cfg, voxel, nbins, device, box_voxel=None, rigid_contact_max=None):
             sdf_narrow_band_range=tuple(cfg.sdf_narrow_band_range), gap=cfg.gap)
 
     builder = newton.ModelBuilder()
-    body_box = builder.add_body(xform=wp.transform(wp.vec3(*cfg.box_center), wp.quat_identity()))
+    body_counter = builder.add_body(xform=wp.transform(wp.vec3(*cfg.counter_center), wp.quat_identity()))
     body_sphere = builder.add_body(xform=wp.transform(wp.vec3(*cfg.sphere_center), wp.quat_identity()))
-    hx, hy, hz = (v / 2.0 for v in cfg.box_full)
-    builder.add_shape_box(body=body_box, hx=hx, hy=hy, hz=hz,
-                          cfg=shape_cfg(cfg.kh_box, box_voxel if box_voxel is not None else voxel))
+    if cfg.counter_type == "box":
+        # box SDF pinned coarse (inert mid-face) so the sphere always hosts marching cubes
+        hx, hy, hz = (v / 2.0 for v in cfg.box_full)
+        builder.add_shape_box(body=body_counter, hx=hx, hy=hy, hz=hz,
+                              cfg=shape_cfg(cfg.kh_box, box_voxel if box_voxel is not None else voxel))
+    else:  # curved: second sphere; both bodies refine at the sweep voxel (no pinning)
+        builder.add_shape_sphere(body=body_counter, radius=cfg.counter_radius,
+                                 cfg=shape_cfg(cfg.kh_counter, voxel))
     builder.add_shape_sphere(body=body_sphere, radius=cfg.R, cfg=shape_cfg(cfg.kh_sphere, voxel))
 
     model = builder.finalize(device=device)
@@ -94,7 +99,7 @@ def _surface(cfg, voxel, nbins, device, box_voxel=None, rigid_contact_max=None):
         return None
     A, C, P, tris = A[keep], C[keep], P[keep], tris[keep]
     area = float(A.sum())
-    rc, pbar = _radial_profile(C[:, :2], A, P, np.asarray(cfg.box_center[:2]),
+    rc, pbar = _radial_profile(C[:, :2], A, P, np.asarray(cfg.counter_center[:2]),
                                nbins, 1.1 * cfg.reference.patch_radius)
 
     # Non-indexed mesh for the viewer: 3 verts/face, per-vertex pressure = its (flat) face value.

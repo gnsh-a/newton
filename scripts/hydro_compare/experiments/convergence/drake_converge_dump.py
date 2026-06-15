@@ -56,8 +56,9 @@ def _surface(cfg, hint, nbins):
     f_s = sg.RegisterFrame(src, GeometryFrame("sphere_frame"))
     f_b = sg.RegisterFrame(src, GeometryFrame("box_frame"))
     g_s = sg.RegisterGeometry(src, f_s, GeometryInstance(RigidTransform(), Sphere(cfg.R), "sphere_geo"))
-    g_b = sg.RegisterGeometry(src, f_b, GeometryInstance(RigidTransform(), Box(*cfg.box_full), "box_geo"))
-    for gid, E in ((g_s, cfg.E_sphere), (g_b, cfg.E_box)):
+    counter_shape = Box(*cfg.box_full) if cfg.counter_type == "box" else Sphere(cfg.counter_radius)
+    g_b = sg.RegisterGeometry(src, f_b, GeometryInstance(RigidTransform(), counter_shape, "counter_geo"))
+    for gid, E in ((g_s, cfg.E_sphere), (g_b, cfg.E_counter)):
         props = ProximityProperties()
         AddCompliantHydroelasticProperties(hint, E, props)
         sg.AssignRole(src, gid, props)
@@ -65,7 +66,7 @@ def _surface(cfg, hint, nbins):
     ctx = sg.CreateDefaultContext()
     poses = FramePoseVector()
     poses.set_value(f_s, RigidTransform(p=cfg.sphere_center))
-    poses.set_value(f_b, RigidTransform(p=cfg.box_center))
+    poses.set_value(f_b, RigidTransform(p=cfg.counter_center))
     sg.get_source_pose_port(src).FixValue(ctx, poses)
 
     surfaces = sg.get_query_output_port().Eval(ctx).ComputeContactSurfaces(
@@ -91,7 +92,7 @@ def _surface(cfg, hint, nbins):
     C = np.array(c_l)
     P = np.array(p_l)
     area = float(A.sum())
-    rc, pbar = _radial_profile(C[:, :2], A, P, np.asarray(cfg.box_center[:2]),
+    rc, pbar = _radial_profile(C[:, :2], A, P, np.asarray(cfg.counter_center[:2]),
                                nbins, 1.1 * cfg.reference.patch_radius)
 
     mesh = s.tri_mesh_W()

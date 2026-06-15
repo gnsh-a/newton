@@ -27,7 +27,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"   # ~/work/newt
 HC="$REPO/scripts/hydro_compare"
 EXP="$HC/experiments"
 FC="$EXP/frozen_compare"
-SCENE="${SCENE:-$EXP/scene.yaml}"
+SCENE="${SCENE:-$EXP/sphere_box.yaml}"
 
 echo "== [dump 1/2] Drake (ground truth + surface mesh) =="
 ( cd "$REPO" && uv run --no-sync python "$FC/drake_dump.py" --scene "$SCENE" --mesh )

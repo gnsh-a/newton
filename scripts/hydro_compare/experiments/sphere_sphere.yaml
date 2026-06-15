@@ -1,0 +1,31 @@
+# Curved-contact variant: two spheres with a large STIFFNESS CONTRAST. The contact surface
+# migrates onto the much stiffer sphere and takes its curvature, so the patch is a curved cap
+# (not the near-flat disc of equal-stiffness convex-convex contact). Stiff sphere is the
+# smaller one (R=0.03) for a tighter cap (~30 deg half-angle). Writes to out/sphere_sphere/.
+#
+# NOTE: the ~333x kh contrast that curves the patch is exactly the unequal-kh regime that
+# triggers Newton's iso-voxel cull bug, so expect heavy perforation on the Newton side.
+sphere:
+  radius: 0.03                  # m    upper sphere, the STIFF one -> patch hugs it (curvature 1/0.03)
+  hydroelastic_modulus: 1.0e9   # Pa   (E_sphere) stiff; kh = E/R = 3.33e10
+counter:
+  type: sphere
+  radius: 0.1                   # m    lower sphere, SOFT and large
+  hydroelastic_modulus: 1.0e7   # Pa   (E_counter) soft; kh = E/R = 1e8  -> 333x contrast
+  center: [0.0, 0.0, 0.0]       # m, world
+contact:
+  penetration_x: 0.005          # m    surface overlap along the line of centers
+material:
+  friction: 0.0
+  margin: 0.0                   # keep 0 so H_eff = H (clean kh = E/H)
+mesh:
+  target_edge: 0.005            # m  -> Newton sdf_target_voxel_size
+  drake_scale: 1.3
+  newton_scale: 0.76
+drake:
+  representation: triangle
+newton:
+  sdf_narrow_band_range: [-0.01, 0.01]  # m
+  gap: 0.0
+  rigid_contact_max: 6000
+output_dir: /home/ganesharivoli/work/newton-sap/scripts/hydro_compare/experiments/out/sphere_sphere

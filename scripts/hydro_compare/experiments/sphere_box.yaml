@@ -43,4 +43,4 @@ newton:
   gap: 0.0
   rigid_contact_max: 6000
 
-output_dir: /home/ganesharivoli/work/newton-sap/scripts/hydro_compare/experiments/out
+output_dir: /home/ganesharivoli/work/newton-sap/scripts/hydro_compare/experiments/out/sphere_box
