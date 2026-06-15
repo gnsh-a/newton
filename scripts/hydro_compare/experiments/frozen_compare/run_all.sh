@@ -23,16 +23,17 @@ for arg in "$@"; do
   esac
 done
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"   # ~/work/newton-sap
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"   # ~/work/newton-sap
 HC="$REPO/scripts/hydro_compare"
 EXP="$HC/experiments"
+FC="$EXP/frozen_compare"
 SCENE="${SCENE:-$EXP/scene.yaml}"
 
 echo "== [dump 1/2] Drake (ground truth + surface mesh) =="
-( cd "$REPO" && uv run --no-sync python "$EXP/drake_dump.py" --scene "$SCENE" --mesh )
+( cd "$REPO" && uv run --no-sync python "$FC/drake_dump.py" --scene "$SCENE" --mesh )
 
 echo "== [dump 2/2] Newton (native SDF + surface mesh; needs CUDA) =="
-( cd "$REPO" && uv run --no-sync python "$EXP/newton_dump.py" --scene "$SCENE" --mesh )
+( cd "$REPO" && uv run --no-sync python "$FC/newton_dump.py" --scene "$SCENE" --mesh )
 
 if [ "$MODE" = view ]; then
   echo "== interactive surface viewer (rotatable; close window to exit) =="
@@ -41,7 +42,7 @@ if [ "$MODE" = view ]; then
 fi
 
 echo "== compare -> diff.json + distributions.png =="
-( cd "$REPO" && uv run --no-sync python "$EXP/compare.py" --scene "$SCENE" )
+( cd "$REPO" && uv run --no-sync python "$FC/compare.py" --scene "$SCENE" )
 
 echo "== 3D surface render -> contact_surface_3d.png (pyvista env) =="
 ( cd "$HC" && uv run python experiments/view_surface.py --scene "$SCENE" )
