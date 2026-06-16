@@ -1199,13 +1199,26 @@ def count_iso_voxels_block(
                     va = texture_sample_sdf(sdf_data_a, point_a)
                     is_valid = not (wp.isnan(vb) or wp.isnan(va))
 
-                    if vb < 0.0 and va < 0.0:
-                        diff_val = k_eff_b * vb - k_eff_a * va
-                    else:
-                        diff_val = vb - va
+                    # Two-sided Lipschitz cull. The equal-pressure field is branch-switched
+                    # (k-weighted inside, equidistance outside) and is discontinuous across
+                    # vb=0 when kh differs, so a single branched test can wrongly cull cells
+                    # the iso-surface passes through. Evaluate BOTH branch fields globally —
+                    # each is genuinely Lipschitz (f_in <= k_eff_a+k_eff_b, f_out <= 2) — and
+                    # cull only when neither admits a zero within the bounding sphere.
+                    # Cost: under unequal kh the f_in arm has a much larger Lipschitz radius
+                    # than f_out, so at fine voxels this keeps significantly more iso blocks
+                    # than the (incorrect) single-branch test did. This is by design — the
+                    # extra blocks recover the contact-patch rim that was being culled away.
+                    f_in = k_eff_b * vb - k_eff_a * va
+                    f_out = vb - va
 
                     # check if bounding sphere contains the isosurface and the distance is within contact gap
-                    if wp.abs(diff_val) > r_eff or va > r + gap_a or vb > r + gap_b or not is_valid:
+                    if (
+                        (wp.abs(f_in) > r_eff and wp.abs(f_out) > 2.0 * r)
+                        or va > r + gap_a
+                        or vb > r + gap_b
+                        or not is_valid
+                    ):
                         continue
                     num_iso_subblocks += 1
                     subblock_idx |= encode_coords_8(x_local, y_local, z_local)
