@@ -1121,6 +1121,73 @@ def test_sdf_resolution_invariance(test, device):
     )
 
 
+def test_curved_contact_refinement_force(test, device):
+    """Hydroelastic normal force on a curved unequal-``kh`` patch must not shed
+    force under SDF refinement.
+
+    A small stiff sphere is pressed 5 mm into a large soft box (333x ``kh``
+    contrast), so the contact patch is a curved cap whose rim sits on the stiff
+    sphere.  The reconstructed normal force is measured at a coarse and a fine
+    ``sdf_target_voxel_size`` through the standard reduced-contact path.
+    Refining the grid only resolves the patch better, so the force must be
+    (nearly) invariant.
+
+    Regresses the iso-voxel cull bug where a single-branch Lipschitz test
+    discarded rim voxels of the curved patch once the voxels were small enough
+    to straddle the discontinuous unequal-``kh`` difference field.  On the buggy
+    path the rim perforates as the grid refines, collapsing the force to ~75% of
+    the coarse value at 0.2 mm; the two-sided cull keeps it flat.  A flat-on-flat
+    patch (e.g. box on box) does not exercise this path -- at least one curved
+    contacting surface is required.
+    """
+    r_stiff, kh_stiff = 0.03, 3.33e10  # small stiff sphere -> patch rim hugs it
+    box_half, kh_soft = 0.10, 1.0e8  # large soft box; 333x kh contrast
+    pen = 0.005  # 5 mm surface overlap along the line of centers
+    coarse, fine = 0.001, 0.0002  # sdf_target_voxel_size [m]; bug only bites at fine
+
+    def make_cfg(kh, vox):
+        return newton.ModelBuilder.ShapeConfig(
+            is_hydroelastic=True,
+            kh=kh,
+            sdf_target_voxel_size=vox,
+            sdf_narrow_band_range=(-0.01, 0.01),
+            sdf_texture_format="float32",
+            gap=0.0,
+        )
+
+    def measure(vox):
+        builder = newton.ModelBuilder()
+        soft = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+        builder.add_shape_box(soft, hx=box_half, hy=box_half, hz=box_half, cfg=make_cfg(kh_soft, vox))
+        cz = box_half + r_stiff - pen
+        stiff = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, cz), wp.quat_identity()))
+        builder.add_shape_sphere(stiff, radius=r_stiff, cfg=make_cfg(kh_stiff, vox))
+        model = builder.finalize(device=device)
+        state = model.state()
+        pipeline = newton.CollisionPipeline(
+            model, rigid_contact_max=400000, sdf_hydroelastic_config=HydroelasticSDF.Config()
+        )
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        return abs(_compute_net_force(contacts, model, state)[2])
+
+    f_coarse = measure(coarse)
+    f_fine = measure(fine)
+
+    test.assertGreater(f_coarse, 0.0, "Expected a penetrating normal force at the coarse voxel size")
+    test.assertGreater(f_fine, 0.0, "Expected a penetrating normal force at the fine voxel size")
+
+    # Fixed path holds the force flat under refinement (ratio ~1.00); the cull bug
+    # collapses it to ~0.75 at 0.2 mm. 0.90 separates the two with wide margin.
+    ratio = f_fine / f_coarse
+    test.assertGreaterEqual(
+        ratio,
+        0.90,
+        f"Refining the SDF shed normal force on the curved patch: "
+        f"fine={f_fine:.1f} N is {ratio:.2f}x coarse={f_coarse:.1f} N (rim voxels culled)",
+    )
+
+
 # --- Test class ---
 
 
@@ -1240,6 +1307,15 @@ add_function_test(
     "test_sdf_resolution_invariance",
     test_sdf_resolution_invariance,
     devices=cuda_devices,
+)
+
+# Curved unequal-kh iso-voxel cull regression test (force must not collapse under refinement)
+add_function_test(
+    TestHydroelastic,
+    "test_curved_contact_refinement_force",
+    test_curved_contact_refinement_force,
+    devices=cuda_devices,
+    check_output=False,
 )
 
 add_function_test(

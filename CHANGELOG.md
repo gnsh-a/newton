@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Fix hydroelastic contact force on curved patches with unequal stiffness collapsing as the SDF grid was refined, caused by erroneously culling contact-patch rim voxels.
 - Fix `SolverMuJoCo` returning `State.joint_qd` in world frame for root `FREE` joints with non-identity `parent_xform`, violating the documented parent-frame contract and corrupting derived `body_qd`.
 
 ## [1.2.0] - 2026-05-12
