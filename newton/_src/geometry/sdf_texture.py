@@ -24,6 +24,7 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
+from .kernels import sdf_box, sdf_sphere
 from .sdf_mc import MC_EDGE_CLAMP_MAX, MC_EDGE_CLAMP_MIN, MC_EDGE_VAL_DIFF_EPS
 from .sdf_utils import get_distance_to_mesh, get_distance_to_mesh_parity
 
@@ -141,6 +142,43 @@ def _query_mesh_sdf(
     return get_distance_to_mesh(mesh, point, max_dist, winding_threshold)
 
 
+# Analytic primitive SDF source. ``sdf_kind == 0`` selects the mesh BVH query;
+# ``sdf_kind == 1`` selects the closed-form primitive SDF.
+SDF_SOURCE_MESH = wp.constant(0)
+SDF_SOURCE_PRIMITIVE = wp.constant(1)
+PRIM_SPHERE = wp.constant(3)  # GeoType.SPHERE; dims = (radius, 0, 0)
+PRIM_BOX = wp.constant(7)  # GeoType.BOX; dims = (hx, hy, hz) half-extents
+
+
+@wp.func
+def eval_primitive_sdf(prim_type: wp.int32, dims: wp.vec3, p: wp.vec3) -> float:
+    """Exact signed distance to a centered primitive in its local frame.
+
+    Negative inside, matching the mesh-query convention. ``dims`` is the
+    shape scale: ``(radius, 0, 0)`` for a sphere, half-extents for a box.
+    """
+    if prim_type == PRIM_SPHERE:
+        return sdf_sphere(p, dims[0])
+    return sdf_box(p, dims[0], dims[1], dims[2])
+
+
+@wp.func
+def _query_shape_sdf(
+    sdf_kind: wp.int32,
+    mesh: wp.uint64,
+    prim_type: wp.int32,
+    prim_dims: wp.vec3,
+    point: wp.vec3,
+    max_dist: wp.float32,
+    winding_threshold: wp.float32,
+    use_parity: wp.int32,
+) -> float:
+    """Evaluate the SDF from either a mesh BVH or an analytic primitive."""
+    if sdf_kind == SDF_SOURCE_MESH:
+        return _query_mesh_sdf(mesh, point, max_dist, winding_threshold, use_parity)
+    return eval_primitive_sdf(prim_type, prim_dims, point)
+
+
 @wp.func
 def _interp_coarse_sdf(
     background_sdf: wp.array[float],
@@ -232,8 +270,11 @@ def _check_subgrid_occupied_kernel(
     num_subgrids_y: int,
     min_corner: wp.vec3,
     cell_size: wp.vec3,
+    sdf_kind: wp.int32,
+    prim_type: wp.int32,
+    prim_dims: wp.vec3,
 ):
-    """Mark subgrids that overlap the narrow band by checking mesh SDF at center."""
+    """Mark subgrids that overlap the narrow band by checking the SDF at center."""
     tid = wp.tid()
     coords = _id_to_xyz(tid, num_subgrids_x, num_subgrids_y)
     sample_pos = min_corner + wp.vec3(
@@ -242,7 +283,9 @@ def _check_subgrid_occupied_kernel(
         (float(coords[2] * cells_per_subgrid) + float(cells_per_subgrid) * 0.5) * cell_size[2],
     )
 
-    signed_distance = _query_mesh_sdf(mesh, sample_pos, 10000.0, winding_threshold, use_parity)
+    signed_distance = _query_shape_sdf(
+        sdf_kind, mesh, prim_type, prim_dims, sample_pos, 10000.0, winding_threshold, use_parity
+    )
     if _is_in_narrow_band(signed_distance, threshold):
         subgrid_required[tid] = 1
     else:
@@ -266,8 +309,11 @@ def _accumulate_subgrid_linearity_error_kernel(
     bg_size_x: int,
     bg_size_y: int,
     bg_size_z: int,
+    sdf_kind: wp.int32,
+    prim_type: wp.int32,
+    prim_dims: wp.vec3,
 ):
-    """Sample mesh SDF at every fine-grid point of every occupied subgrid and
+    """Sample the SDF at every fine-grid point of every occupied subgrid and
     accumulate the maximum absolute deviation from the trilinearly interpolated
     coarse SDF via ``wp.atomic_max``.
 
@@ -309,7 +355,7 @@ def _accumulate_subgrid_linearity_error_kernel(
         float(gy) * cell_size[1],
         float(gz) * cell_size[2],
     )
-    mesh_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
+    mesh_val = _query_shape_sdf(sdf_kind, mesh, prim_type, prim_dims, pos, 10000.0, winding_threshold, use_parity)
 
     inv_cpsg = 1.0 / float(cells_per_subgrid)
     coarse_val = _interp_coarse_sdf(
@@ -363,8 +409,11 @@ def _build_coarse_sdf_from_mesh_kernel(
     bg_size_z: int,
     winding_threshold: float,
     use_parity: wp.int32,
+    sdf_kind: wp.int32,
+    prim_type: wp.int32,
+    prim_dims: wp.vec3,
 ):
-    """Populate background SDF by querying mesh at subgrid corner positions."""
+    """Populate background SDF by querying the source at subgrid corner positions."""
     tid = wp.tid()
 
     total_bg = bg_size_x * bg_size_y * bg_size_z
@@ -382,7 +431,9 @@ def _build_coarse_sdf_from_mesh_kernel(
         float(z_block * cells_per_subgrid) * cell_size[2],
     )
 
-    background_sdf[tid] = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
+    background_sdf[tid] = _query_shape_sdf(
+        sdf_kind, mesh, prim_type, prim_dims, pos, 10000.0, winding_threshold, use_parity
+    )
 
 
 @wp.kernel
@@ -402,8 +453,11 @@ def _populate_subgrid_texture_float32_kernel(
     num_subgrids_z: int,
     tex_blocks_per_dim: int,
     tex_size: int,
+    sdf_kind: wp.int32,
+    prim_type: wp.int32,
+    prim_dims: wp.vec3,
 ):
-    """Populate subgrid texture by querying mesh SDF (float32 version)."""
+    """Populate subgrid texture by querying the SDF source (float32 version)."""
     tid = wp.tid()
 
     total_subgrids = num_subgrids_x * num_subgrids_y * num_subgrids_z
@@ -437,7 +491,7 @@ def _populate_subgrid_texture_float32_kernel(
         float(gy) * cell_size[1],
         float(gz) * cell_size[2],
     )
-    sdf_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
+    sdf_val = _query_shape_sdf(sdf_kind, mesh, prim_type, prim_dims, pos, 10000.0, winding_threshold, use_parity)
 
     address = subgrid_addresses[subgrid_idx]
     if address < 0:
@@ -469,8 +523,11 @@ def _populate_subgrid_texture_uint16_kernel(
     tex_size: int,
     sdf_min: float,
     sdf_range_inv: float,
+    sdf_kind: wp.int32,
+    prim_type: wp.int32,
+    prim_dims: wp.vec3,
 ):
-    """Populate subgrid texture by querying mesh SDF (uint16 quantized version)."""
+    """Populate subgrid texture by querying the SDF source (uint16 quantized version)."""
     tid = wp.tid()
 
     total_subgrids = num_subgrids_x * num_subgrids_y * num_subgrids_z
@@ -504,7 +561,7 @@ def _populate_subgrid_texture_uint16_kernel(
         float(gy) * cell_size[1],
         float(gz) * cell_size[2],
     )
-    sdf_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
+    sdf_val = _query_shape_sdf(sdf_kind, mesh, prim_type, prim_dims, pos, 10000.0, winding_threshold, use_parity)
 
     address = subgrid_addresses[subgrid_idx]
     if address < 0:
@@ -537,8 +594,11 @@ def _populate_subgrid_texture_uint8_kernel(
     tex_size: int,
     sdf_min: float,
     sdf_range_inv: float,
+    sdf_kind: wp.int32,
+    prim_type: wp.int32,
+    prim_dims: wp.vec3,
 ):
-    """Populate subgrid texture by querying mesh SDF (uint8 quantized version)."""
+    """Populate subgrid texture by querying the SDF source (uint8 quantized version)."""
     tid = wp.tid()
 
     total_subgrids = num_subgrids_x * num_subgrids_y * num_subgrids_z
@@ -572,7 +632,7 @@ def _populate_subgrid_texture_uint8_kernel(
         float(gy) * cell_size[1],
         float(gz) * cell_size[2],
     )
-    sdf_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
+    sdf_val = _query_shape_sdf(sdf_kind, mesh, prim_type, prim_dims, pos, 10000.0, winding_threshold, use_parity)
 
     address = subgrid_addresses[subgrid_idx]
     if address < 0:
@@ -1176,7 +1236,7 @@ def texture_sample_sdf_grad_only_hw(
 
 
 def build_sparse_sdf_from_mesh(
-    mesh: wp.Mesh,
+    mesh: wp.Mesh | None,
     grid_size_x: int,
     grid_size_y: int,
     grid_size_z: int,
@@ -1189,9 +1249,12 @@ def build_sparse_sdf_from_mesh(
     winding_threshold: float = 0.5,
     linearization_error_threshold: float | None = None,
     use_parity: bool = False,
+    sdf_kind: int = 0,
+    prim_type: int = 0,
+    prim_dims: tuple[float, float, float] = (0.0, 0.0, 0.0),
     device: str = "cuda",
 ) -> dict:
-    """Build sparse SDF texture representation by querying mesh directly.
+    """Build sparse SDF texture data by querying an SDF source.
 
     Mirrors the NanoVDB sparse-volume construction pattern: check subgrid
     occupancy at centers, then populate only occupied subgrids.  Linearity
@@ -1200,8 +1263,9 @@ def build_sparse_sdf_from_mesh(
     texture memory.
 
     Args:
-        mesh: Warp mesh.  Must have ``support_winding_number=True`` unless
-            *use_parity* is ``True``.
+        mesh: Warp mesh. Must be set when ``sdf_kind`` is
+            :data:`SDF_SOURCE_MESH` and have ``support_winding_number=True``
+            unless *use_parity* is ``True``.
         grid_size_x: fine grid X dimension [sample].
         grid_size_y: fine grid Y dimension [sample].
         grid_size_z: fine grid Z dimension [sample].
@@ -1220,6 +1284,12 @@ def build_sparse_sdf_from_mesh(
             classification (:func:`wp.mesh_query_point_sign_parity`) instead
             of winding numbers. Cheaper per sample but requires a closed,
             manifold mesh; results on open meshes are undefined.
+        sdf_kind: SDF source selector, either :data:`SDF_SOURCE_MESH` or
+            :data:`SDF_SOURCE_PRIMITIVE`.
+        prim_type: Primitive geometry type when ``sdf_kind`` is
+            :data:`SDF_SOURCE_PRIMITIVE`.
+        prim_dims: Primitive dimensions [m] when ``sdf_kind`` is
+            :data:`SDF_SOURCE_PRIMITIVE`.
         device: Warp device string.
 
     Returns:
@@ -1257,12 +1327,19 @@ def build_sparse_sdf_from_mesh(
     # -------------------------------------------------------------------
     parity_flag = wp.int32(1 if use_parity else 0)
 
+    # SDF source: mesh BVH (sdf_kind=0) or analytic primitive (sdf_kind=1).
+    # mesh may be None for the analytic path; the kernels ignore mesh_id then.
+    mesh_id = wp.uint64(0) if mesh is None else mesh.id
+    sdf_kind_wp = wp.int32(sdf_kind)
+    prim_type_wp = wp.int32(prim_type)
+    prim_dims_wp = wp.vec3(float(prim_dims[0]), float(prim_dims[1]), float(prim_dims[2]))
+
     background_sdf = wp.zeros(total_bg, dtype=float, device=device)
     wp.launch(
         _build_coarse_sdf_from_mesh_kernel,
         dim=total_bg,
         inputs=[
-            mesh.id,
+            mesh_id,
             background_sdf,
             min_corner_wp,
             cell_size_wp,
@@ -1272,6 +1349,9 @@ def build_sparse_sdf_from_mesh(
             bg_size_z,
             winding_threshold,
             parity_flag,
+            sdf_kind_wp,
+            prim_type_wp,
+            prim_dims_wp,
         ],
         device=device,
     )
@@ -1282,7 +1362,7 @@ def build_sparse_sdf_from_mesh(
         _check_subgrid_occupied_kernel,
         dim=total_subgrids,
         inputs=[
-            mesh.id,
+            mesh_id,
             threshold,
             winding_threshold,
             parity_flag,
@@ -1292,6 +1372,9 @@ def build_sparse_sdf_from_mesh(
             h,
             min_corner_wp,
             cell_size_wp,
+            sdf_kind_wp,
+            prim_type_wp,
+            prim_dims_wp,
         ],
         device=device,
     )
@@ -1318,7 +1401,7 @@ def build_sparse_sdf_from_mesh(
             _accumulate_subgrid_linearity_error_kernel,
             dim=total_work,
             inputs=[
-                mesh.id,
+                mesh_id,
                 background_sdf,
                 subgrid_required,
                 linearity_errors,
@@ -1333,6 +1416,9 @@ def build_sparse_sdf_from_mesh(
                 bg_size_x,
                 bg_size_y,
                 bg_size_z,
+                sdf_kind_wp,
+                prim_type_wp,
+                prim_dims_wp,
             ],
             device=device,
         )
@@ -1395,7 +1481,7 @@ def build_sparse_sdf_from_mesh(
                 _populate_subgrid_texture_float32_kernel,
                 dim=total_work,
                 inputs=[
-                    mesh.id,
+                    mesh_id,
                     subgrid_required,
                     subgrid_addresses,
                     subgrid_start_slots_gpu,
@@ -1410,6 +1496,9 @@ def build_sparse_sdf_from_mesh(
                     d,
                     tex_blocks_per_dim,
                     tex_size,
+                    sdf_kind_wp,
+                    prim_type_wp,
+                    prim_dims_wp,
                 ],
                 device=device,
             )
@@ -1422,7 +1511,7 @@ def build_sparse_sdf_from_mesh(
                 _populate_subgrid_texture_uint16_kernel,
                 dim=total_work,
                 inputs=[
-                    mesh.id,
+                    mesh_id,
                     subgrid_required,
                     subgrid_addresses,
                     subgrid_start_slots_gpu,
@@ -1439,6 +1528,9 @@ def build_sparse_sdf_from_mesh(
                     tex_size,
                     global_sdf_min,
                     sdf_range_inv,
+                    sdf_kind_wp,
+                    prim_type_wp,
+                    prim_dims_wp,
                 ],
                 device=device,
             )
@@ -1451,7 +1543,7 @@ def build_sparse_sdf_from_mesh(
                 _populate_subgrid_texture_uint8_kernel,
                 dim=total_work,
                 inputs=[
-                    mesh.id,
+                    mesh_id,
                     subgrid_required,
                     subgrid_addresses,
                     subgrid_start_slots_gpu,
@@ -1468,6 +1560,9 @@ def build_sparse_sdf_from_mesh(
                     tex_size,
                     global_sdf_min,
                     sdf_range_inv,
+                    sdf_kind_wp,
+                    prim_type_wp,
+                    prim_dims_wp,
                 ],
                 device=device,
             )
@@ -1705,6 +1800,116 @@ def create_texture_sdf_from_mesh(
 
     if return_sparse_data:
         return sdf_params, coarse_tex, subgrid_tex, sparse_data
+    return sdf_params, coarse_tex, subgrid_tex
+
+
+# Primitive types with an exact closed-form SDF used by the texture builder.
+# Other primitives still go through tessellation -> create_texture_sdf_from_mesh.
+PRIMITIVE_SDF_SUPPORTED = frozenset({int(PRIM_SPHERE), int(PRIM_BOX)})
+
+
+def create_texture_sdf_from_primitive(
+    prim_type: int,
+    prim_dims: tuple[float, float, float],
+    *,
+    margin: float = 0.05,
+    narrow_band_range: tuple[float, float] = (-0.1, 0.1),
+    max_resolution: int | None = None,
+    target_voxel_size: float | None = None,
+    subgrid_size: int = 8,
+    quantization_mode: int = QuantizationMode.UINT16,
+    scale_baked: bool = False,
+    linearization_error_threshold: float | None = None,
+    device: str = "cuda",
+) -> tuple[TextureSDFData, wp.Texture3D | None, wp.Texture3D | None]:
+    """Create a texture SDF for a primitive from its analytic distance field.
+
+    Bakes closed-form signed distances directly into the sparse texture grid,
+    skipping primitive tessellation. The runtime still samples the baked
+    texture, so voxel interpolation and quantization accuracy are unchanged.
+
+    Args:
+        prim_type: Geometry type integer code. Must be in
+            :data:`PRIMITIVE_SDF_SUPPORTED` (sphere or box).
+        prim_dims: shape scale. ``(radius, 0, 0)`` for a sphere; half-extents
+            ``(hx, hy, hz)`` for a box. The primitive is centered at the origin.
+        margin: extra AABB padding [m].
+        narrow_band_range: signed narrow-band distance range [m].
+        max_resolution: maximum grid dimension [voxel]; used when
+            ``target_voxel_size`` is ``None`` (defaults to 64 if both are None).
+        target_voxel_size: target voxel size [m]; takes precedence over
+            ``max_resolution``.
+        subgrid_size: cells per subgrid.
+        quantization_mode: :class:`QuantizationMode` value.
+        scale_baked: whether shape scale is already incorporated in ``prim_dims``
+            (it is, for the absolute dims passed here).
+        linearization_error_threshold: see :func:`build_sparse_sdf_from_mesh`.
+        device: Warp device string.
+
+    Returns:
+        ``(texture_sdf, coarse_texture, subgrid_texture)``; caller must keep
+        texture references alive. Mirrors :func:`create_texture_sdf_from_mesh`'s
+        return.
+    """
+    if prim_type not in PRIMITIVE_SDF_SUPPORTED:
+        raise ValueError(f"prim_type {prim_type} has no analytic SDF; use create_texture_sdf_from_mesh")
+
+    # Analytic AABB (primitive centered at origin), matching the extent the
+    # equivalent watertight mesh would span so grid resolution agrees.
+    r = float(prim_dims[0])
+    if prim_type == int(PRIM_SPHERE):
+        half = np.array([r, r, r], dtype=float)
+    else:  # PRIM_BOX
+        half = np.array([float(prim_dims[0]), float(prim_dims[1]), float(prim_dims[2])], dtype=float)
+
+    min_ext = -half - margin
+    max_ext = half + margin
+
+    ext = max_ext - min_ext
+    max_ext_scalar = float(np.max(ext))
+    if max_ext_scalar < 1e-10:
+        return create_empty_texture_sdf_data(), None, None
+
+    # Resolution rules identical to create_texture_sdf_from_mesh.
+    if target_voxel_size is not None:
+        if target_voxel_size <= 0.0:
+            raise ValueError("target_voxel_size must be > 0")
+        derived_res = int(np.ceil(max_ext_scalar / float(target_voxel_size)))
+        max_resolution = max(8, ((derived_res + 7) // 8) * 8)
+    elif max_resolution is None:
+        max_resolution = 64
+    max_resolution = int(max_resolution)
+    if max_resolution <= 0 or max_resolution >= (1 << 16):
+        raise ValueError(f"max_resolution out of range: {max_resolution}")
+
+    cell_size_scalar = max_ext_scalar / max_resolution
+    dims = np.ceil(ext / cell_size_scalar).astype(int) + 1
+    grid_x, grid_y, grid_z = int(dims[0]), int(dims[1]), int(dims[2])
+    cell_size = ext / (dims - 1)
+
+    narrow_band_thickness = max(abs(narrow_band_range[0]), abs(narrow_band_range[1]))
+
+    sparse_data = build_sparse_sdf_from_mesh(
+        None,
+        grid_x,
+        grid_y,
+        grid_z,
+        cell_size,
+        min_ext,
+        max_ext,
+        subgrid_size=subgrid_size,
+        narrow_band_thickness=narrow_band_thickness,
+        quantization_mode=quantization_mode,
+        linearization_error_threshold=linearization_error_threshold,
+        sdf_kind=1,  # analytic primitive
+        prim_type=prim_type,
+        prim_dims=(float(prim_dims[0]), float(prim_dims[1]), float(prim_dims[2])),
+        device=device,
+    )
+
+    sdf_params, coarse_tex, subgrid_tex = create_sparse_sdf_textures(sparse_data, device)
+    sdf_params.scale_baked = scale_baked
+
     return sdf_params, coarse_tex, subgrid_tex
 
 
