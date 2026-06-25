@@ -62,7 +62,12 @@ from .sdf_mc import (
     get_mc_tables,
     get_triangle_fraction,
 )
-from .sdf_texture import TextureSDFData, texture_sample_sdf, texture_sample_sdf_at_voxel
+from .sdf_texture import (
+    TextureSDFData,
+    texture_sample_sdf,
+    texture_sample_sdf_at_voxel,
+    texture_sample_sdf_grad,
+)
 from .utils import scan_with_total
 
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
@@ -130,92 +135,16 @@ def linear_pressure(signed_depth: wp.float32, shape_idx: wp.int32, data: LinearP
 
 
 @wp.func
-def _trilinear_value_from_corners(
-    corner_offsets_table: wp.array[wp.vec3ub],
-    corner_vals: vec8f,
-    uvw: wp.vec3,
-) -> wp.float32:
-    # Use the MC table's corner offsets instead of assuming a fixed index layout.
-    value = float(0.0)
-    for i in range(8):
-        off = wp.vec3i(corner_offsets_table[i])
-
-        wx = 1.0 - uvw[0]
-        if off.x == 1:
-            wx = uvw[0]
-        wy = 1.0 - uvw[1]
-        if off.y == 1:
-            wy = uvw[1]
-        wz = 1.0 - uvw[2]
-        if off.z == 1:
-            wz = uvw[2]
-
-        value = value + wp.float32(corner_vals[i]) * wx * wy * wz
-    return value
-
-
-@wp.func
-def _trilinear_grad_from_corners(
-    corner_offsets_table: wp.array[wp.vec3ub],
-    corner_vals: vec8f,
-    uvw: wp.vec3,
-    voxel_size: wp.vec3,
-) -> wp.vec3:
-    grad_uvw = wp.vec3(0.0, 0.0, 0.0)
-    for i in range(8):
-        off = wp.vec3i(corner_offsets_table[i])
-
-        wx = 1.0 - uvw[0]
-        dwx = -1.0
-        if off.x == 1:
-            wx = uvw[0]
-            dwx = 1.0
-
-        wy = 1.0 - uvw[1]
-        dwy = -1.0
-        if off.y == 1:
-            wy = uvw[1]
-            dwy = 1.0
-
-        wz = 1.0 - uvw[2]
-        dwz = -1.0
-        if off.z == 1:
-            wz = uvw[2]
-            dwz = 1.0
-
-        val = wp.float32(corner_vals[i])
-        grad_uvw[0] = grad_uvw[0] + val * dwx * wy * wz
-        grad_uvw[1] = grad_uvw[1] + val * wx * dwy * wz
-        grad_uvw[2] = grad_uvw[2] + val * wx * wy * dwz
-
-    return wp.cw_div(grad_uvw, voxel_size)
-
-
-@wp.func
-def _compute_linear_hydro_face_properties(
-    corner_offsets_table: wp.array[wp.vec3ub],
-    corner_sdf_b_vals: vec8f,
-    corner_sdf_a_vals: vec8f,
-    sdf_b: TextureSDFData,
-    x_id: wp.int32,
-    y_id: wp.int32,
-    z_id: wp.int32,
-    face_center: wp.vec3,
+def _compute_linear_hydro_solver_split(
+    phi_a: wp.float32,
+    grad_phi_a_b: wp.vec3,
+    phi_b: wp.float32,
+    grad_phi_b_b: wp.vec3,
     normal_a_to_b_b: wp.vec3,
     area: wp.float32,
     k_a: wp.float32,
     k_b: wp.float32,
 ) -> tuple[int, wp.float32, wp.float32, wp.float32]:
-    # Both bodies' SDF values were sampled at shape-B voxel corners, so the
-    # interpolated gradients are in B's frame, matching the MC normal.
-    cell_origin = sdf_b.sdf_box_lower + wp.cw_mul(int_to_vec3f(x_id, y_id, z_id), sdf_b.voxel_size)
-    uvw = wp.cw_div(face_center - cell_origin, sdf_b.voxel_size)
-
-    phi_b = _trilinear_value_from_corners(corner_offsets_table, corner_sdf_b_vals, uvw)
-    phi_a = _trilinear_value_from_corners(corner_offsets_table, corner_sdf_a_vals, uvw)
-    grad_phi_b = _trilinear_grad_from_corners(corner_offsets_table, corner_sdf_b_vals, uvw, sdf_b.voxel_size)
-    grad_phi_a = _trilinear_grad_from_corners(corner_offsets_table, corner_sdf_a_vals, uvw, sdf_b.voxel_size)
-
     p_b = -k_b * phi_b
     p_a = -k_a * phi_a
     p0 = 0.5 * (p_a + p_b)
@@ -223,8 +152,8 @@ def _compute_linear_hydro_face_properties(
     # Newton convention: the contact normal points shape_a -> shape_b.
     # SDF gradients point outward, so this normal points into A's SDF field
     # direction and opposite B's SDF field direction.
-    g_a = k_a * wp.dot(grad_phi_a, normal_a_to_b_b)
-    g_b = -k_b * wp.dot(grad_phi_b, normal_a_to_b_b)
+    g_a = k_a * wp.dot(grad_phi_a_b, normal_a_to_b_b)
+    g_b = -k_b * wp.dot(grad_phi_b_b, normal_a_to_b_b)
     if p0 <= 0.0 or g_a < wp.static(HYDRO_GRAD_EPS) or g_b < wp.static(HYDRO_GRAD_EPS):
         return int(0), p0, float(0.0), float(0.0)
 
@@ -232,6 +161,38 @@ def _compute_linear_hydro_face_properties(
     # phi0 = -p0/g. Their product still gives the face force area*p0.
     g = 1.0 / (1.0 / g_a + 1.0 / g_b)
     return int(1), p0, area * g, -p0 / g
+
+
+@wp.func
+def _compute_linear_hydro_face_properties(
+    sdf_a: TextureSDFData,
+    sdf_b: TextureSDFData,
+    X_b_to_a: wp.transform,
+    X_a_to_b: wp.transform,
+    face_center_b: wp.vec3,
+    normal_a_to_b_b: wp.vec3,
+    area: wp.float32,
+    k_a: wp.float32,
+    k_b: wp.float32,
+) -> tuple[int, wp.float32, wp.float32, wp.float32]:
+    # Match Drake's hydro contact construction: evaluate each geometry's
+    # native pressure-field gradient at the face centroid, then project both
+    # gradients onto Newton's shape-a -> shape-b contact normal.
+    phi_b, grad_phi_b_b = texture_sample_sdf_grad(sdf_b, face_center_b)
+    face_center_a = wp.transform_point(X_b_to_a, face_center_b)
+    phi_a, grad_phi_a_a = texture_sample_sdf_grad(sdf_a, face_center_a)
+    grad_phi_a_b = wp.transform_vector(X_a_to_b, grad_phi_a_a)
+
+    return _compute_linear_hydro_solver_split(
+        phi_a,
+        grad_phi_a_b,
+        phi_b,
+        grad_phi_b_b,
+        normal_a_to_b_b,
+        area,
+        k_a,
+        k_b,
+    )
 
 
 @wp.func
@@ -1418,9 +1379,8 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any):
         any_verts_inside_gap = False
         corner_vals = vec8f()
         corner_sdf_vals = vec8f()
-        corner_sdf_other_vals = vec8f()
 
-        X_a_to_b = wp.transform_multiply(wp.transform_inverse(X_ws_other), X_ws)
+        X_self_to_other = wp.transform_multiply(wp.transform_inverse(X_ws_other), X_ws)
 
         for i in range(8):
             corner_offset = wp.vec3i(corner_offsets_table[i])
@@ -1428,14 +1388,16 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any):
             y = y_id + corner_offset.y
             z = z_id + corner_offset.z
 
-            local_pos_a = sdf_data.sdf_box_lower + wp.cw_mul(wp.vec3(float(x), float(y), float(z)), sdf_data.voxel_size)
-            point_b = wp.transform_point(X_a_to_b, local_pos_a)
+            local_pos_self = sdf_data.sdf_box_lower + wp.cw_mul(
+                wp.vec3(float(x), float(y), float(z)), sdf_data.voxel_size
+            )
+            point_other = wp.transform_point(X_self_to_other, local_pos_self)
             valA = texture_sample_sdf_at_voxel(sdf_data, x, y, z)
-            valB = texture_sample_sdf(sdf_other_data, point_b)
+            valB = texture_sample_sdf(sdf_other_data, point_other)
 
             is_valid = not (wp.isnan(valA) or wp.isnan(valB))
             if not is_valid:
-                return wp.uint8(0), corner_vals, corner_sdf_vals, corner_sdf_other_vals, False, False
+                return wp.uint8(0), corner_vals, corner_sdf_vals, False, False
 
             # Iso-pressure surface: the contact patch is the locus where
             # ``p_self == p_other``. Evaluate ``pressure_func`` at every
@@ -1452,7 +1414,6 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any):
 
             corner_vals[i] = v_diff
             corner_sdf_vals[i] = valA
-            corner_sdf_other_vals[i] = valB
 
             if v_diff < 0.0:
                 cube_idx |= wp.uint8(1) << wp.uint8(i)
@@ -1460,7 +1421,7 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any):
             if valA <= gap_sum:
                 any_verts_inside_gap = True
 
-        return cube_idx, corner_vals, corner_sdf_vals, corner_sdf_other_vals, any_verts_inside_gap, True
+        return cube_idx, corner_vals, corner_sdf_vals, any_verts_inside_gap, True
 
     return mc_iterate_voxel_vertices
 
@@ -1712,7 +1673,6 @@ def get_generate_contacts_kernel(
                 cube_idx,
                 corner_vals,
                 corner_sdf_vals,
-                corner_sdf_other_vals,
                 any_verts_inside,
                 all_verts_valid,
             ) = wp.static(mc_iterate)(
@@ -1747,6 +1707,8 @@ def get_generate_contacts_kernel(
             k_eff = get_effective_stiffness(k_a, k_b)
 
             X_ws_b = transform_b
+            X_b_to_a = wp.transform_multiply(wp.transform_inverse(transform_a), transform_b)
+            X_a_to_b = wp.transform_inverse(X_b_to_a)
 
             # Generate faces and locally compact candidates before writing to the
             # global contact buffer (reduces atomics and downstream reduction load).
@@ -1805,16 +1767,11 @@ def get_generate_contacts_kernel(
                 face_phi0 = 2.0 * pen_depth
                 if pen_depth < 0.0:
                     if wp.static(use_linear_contact_properties):
-                        # Compute the solver split while both bodies' corner
-                        # SDF samples are still in registers.
                         hydro_valid, face_pressure, face_stiffness, face_phi0 = _compute_linear_hydro_face_properties(
-                            corner_offsets_table,
-                            corner_sdf_vals,
-                            corner_sdf_other_vals,
+                            sdf_data_a,
                             sdf_data_b,
-                            x_id,
-                            y_id,
-                            z_id,
+                            X_b_to_a,
+                            X_a_to_b,
                             face_center,
                             normal,
                             area,
