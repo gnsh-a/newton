@@ -117,15 +117,14 @@ def export_hydroelastic_contact_to_buffer(
     normal: wp.vec3,
     depth: float,
     area: float,
+    contact_stiffness: float,
+    contact_phi0: float,
     reducer_data: GlobalContactReducerData,
 ) -> int:
-    """Store a hydroelastic contact in the buffer with face area.
+    """Store a hydroelastic contact in the buffer with face solver data.
 
-    Extends :func:`export_contact_to_buffer` by storing the face area.
-    Per-contact pressure is recomputed on demand by downstream kernels via
-    ``pressure_func(depth, shape_b, pressure_data)`` rather than cached here:
-    ``depth`` and ``shape_b`` are already in the buffer (``position_depth`` and
-    ``shape_pairs``), so a memo would only duplicate the call.
+    Extends :func:`export_contact_to_buffer` by storing the face area and the
+    solver's per-face hydroelastic stiffness / signed distance split.
 
     Args:
         shape_a: First shape index
@@ -134,6 +133,8 @@ def export_hydroelastic_contact_to_buffer(
         normal: Contact normal
         depth: Penetration depth (negative = penetrating, standard convention)
         area: Contact surface area
+        contact_stiffness: Solver stiffness for this face.
+        contact_phi0: Solver signed distance for this face.
         reducer_data: GlobalContactReducerData with all arrays
 
     Returns:
@@ -144,6 +145,8 @@ def export_hydroelastic_contact_to_buffer(
 
     if contact_id >= 0:
         reducer_data.contact_area[contact_id] = area
+        reducer_data.contact_stiffness[contact_id] = contact_stiffness
+        reducer_data.contact_phi0[contact_id] = contact_phi0
 
     return contact_id
 
