@@ -112,7 +112,10 @@
       <label class="tog"><input type="checkbox" id="tEdge" checked> Triangle edges</label>
       <label class="tog"><input type="checkbox" id="tTrim"> Trim to contact patch</label>
       <label class="tog"><input type="checkbox" id="tAxes" checked> Axes (body B)</label>
-      <label class="tog"><input type="checkbox" id="tMC33"> MC33 (topological, pop-free)</label>
+      <div class="row" style="margin-top:7px"><label>Surface algo</label>
+        <span class="seg" style="flex:1;min-width:0;margin:0 0 0 10px">
+          <button id="algMC" class="on">MC</button><button id="algMC33">MC33</button><button id="algMT">MT</button></span></div>
+      <div class="hint">MC = classic · MC33 = topological · MT = marching tetrahedra (pop-free)</div>
     </div>
 
     <div class="card">
@@ -264,7 +267,7 @@ const cA = new THREE.Vector3(0,0,0);
 
 const S = { bx:1.6, by:1, bz:0, resA:24, resB:24, wA:1, wB:1, rA:1.0, rB:1.2,
             typeA:'box', typeB:'sphere',
-            sph:true, grid:true, surf:true, edge:true, trim:false, axes:true, mc33:false, inset:'A' };
+            sph:true, grid:true, surf:true, edge:true, trim:false, axes:true, algo:'mc', inset:'A' };
 
 const cB = () => new THREE.Vector3(S.bx, S.by, S.bz);
 
@@ -338,7 +341,8 @@ function compute(){
     // gate 2: voxel sits in the physical overlap (both phi < 0 somewhere)
     if(!(dMin<0 && dMax>=0 && insideBoth)) continue;
     activeVox.push({i,j,k,h,m:minA});
-    (S.mc33?mc33Emit:mcEmit)(D,P,gA,gB,tris,S.trim);   // MC33 (pop-free) vs classic MC; S.trim clips to overlap
+    // surface algo: MC (classic) | MC33 (topological) | MT (marching tetrahedra, pop-free)
+    (S.algo==='mt'?mtEmit:S.algo==='mc33'?mc33Emit:mcEmit)(D,P,gA,gB,tris,S.trim);
   }
   // patch area: sum triangle areas of the produced mesh
   nTri = tris.length/9; area=0;
@@ -395,6 +399,32 @@ function mcEmit(D,P,gA,gB,out,clip){
   for(let e=0;e<12;e++) if(em&(1<<e)) V[e]=xvert(EDGE[e][0],EDGE[e][1],D,P,gA,gB);
   const t=triTable[ci];
   for(let n=0;n<t.length;n+=3) pushPoly([V[t[n]],V[t[n+1]],V[t[n+2]]],out,clip);
+}
+
+// Marching tetrahedra (pop-free). 6-tet uniform decomposition of the voxel,
+// all tets sharing the main diagonal 0-6 (Freudenthal/Kuhn) — same split in
+// every voxel, so it is crack-free across voxels. Each tet's D field is LINEAR,
+// so its zero-set is an exact planar polygon: as B moves, triangles are born at
+// ZERO area and grow, instead of MC's finite-area pops at a corner sign flip.
+const TETS=[[0,1,2,6],[0,2,3,6],[0,3,7,6],[0,7,4,6],[0,4,5,6],[0,5,1,6]];
+function mtEmit(D,P,gA,gB,out,clip){
+  for(const tet of TETS){
+    const ins=[], outs=[];                       // classify corners: inside = D<0
+    for(let v=0;v<4;v++){ if(D[tet[v]]<0) ins.push(tet[v]); else outs.push(tet[v]); }
+    const ni=ins.length;
+    if(ni===0 || ni===4) continue;               // no zero-crossing in this tet
+    if(ni===1){                                  // 1 in -> triangle cutting that corner
+      const a=ins[0];
+      pushPoly([xvert(a,outs[0],D,P,gA,gB), xvert(a,outs[1],D,P,gA,gB), xvert(a,outs[2],D,P,gA,gB)], out, clip);
+    } else if(ni===3){                           // 3 in (1 out) -> triangle around the out corner
+      const a=outs[0];
+      pushPoly([xvert(a,ins[0],D,P,gA,gB), xvert(a,ins[1],D,P,gA,gB), xvert(a,ins[2],D,P,gA,gB)], out, clip);
+    } else {                                      // 2 in / 2 out -> quad (ring order so the fan is valid)
+      const [i0,i1]=ins, [o0,o1]=outs;
+      pushPoly([xvert(i0,o0,D,P,gA,gB), xvert(i0,o1,D,P,gA,gB),
+                xvert(i1,o1,D,P,gA,gB), xvert(i1,o0,D,P,gA,gB)], out, clip);
+    }
+  }
 }
 
 // Marching-cubes polygonizer used by the inset (plain, no clip / no overlap).
@@ -2541,7 +2571,11 @@ bindTog('tSph','sph'); bindTog('tGrid','grid'); bindTog('tSurf','surf'); bindTog
 bindTog('tAxes','axes');
 // trim changes geometry, so rebuild (not just visibility)
 document.getElementById('tTrim').addEventListener('change',e=>{ S.trim=e.target.checked; rebuild(); });
-document.getElementById('tMC33').addEventListener('change',e=>{ S.mc33=e.target.checked; rebuild(); });
+
+// surface-algorithm selector (MC / MC33 / MT) — mutually exclusive, geometry changes -> rebuild
+const algoBtns={mc:document.getElementById('algMC'), mc33:document.getElementById('algMC33'), mt:document.getElementById('algMT')};
+function setAlgo(a){ S.algo=a; for(const k in algoBtns) algoBtns[k].classList.toggle('on',k===a); rebuild(); }
+for(const k in algoBtns) algoBtns[k].addEventListener('click',()=>setAlgo(k));
 
 // inset shape selector
 const insABtn=document.getElementById('insA'), insBBtn=document.getElementById('insB');
