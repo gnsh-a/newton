@@ -10800,10 +10800,12 @@ class ModelBuilder:
                 )
 
             from ..geometry.sdf_texture import (  # noqa: PLC0415
+                PRIMITIVE_SDF_SUPPORTED,
                 QuantizationMode,
                 TextureSDFData,
                 create_empty_texture_sdf_data,
                 create_texture_sdf_from_mesh,
+                create_texture_sdf_from_primitive,
             )
 
             _tex_fmt_map = {
@@ -10915,6 +10917,36 @@ class ModelBuilder:
                                 compact_texture_sdf_coarse_textures.append(None)
                                 compact_texture_sdf_subgrid_textures.append(None)
                                 compact_texture_sdf_subgrid_start_slots.append(None)
+                        elif int(shape_type) in PRIMITIVE_SDF_SUPPORTED:
+                            # Sphere/box can be baked from their analytic SDFs,
+                            # avoiding tessellation bias from generated meshes.
+                            try:
+                                tex_data, c_tex, s_tex = create_texture_sdf_from_primitive(
+                                    int(shape_type),
+                                    (float(shape_scale[0]), float(shape_scale[1]), float(shape_scale[2])),
+                                    margin=sdf_gen_margin,
+                                    narrow_band_range=tuple(sdf_narrow_band_range),
+                                    max_resolution=effective_max_resolution,
+                                    target_voxel_size=sdf_target_voxel_size,
+                                    quantization_mode=_tex_fmt_map[sdf_tex_fmt],
+                                    scale_baked=True,
+                                    device=device,
+                                )
+                            except Exception as e:
+                                warnings.warn(
+                                    f"Analytic texture SDF construction failed for shape {i} "
+                                    f"(type={shape_type}): {e}. Using empty SDF.",
+                                    stacklevel=2,
+                                )
+                                tex_data = create_empty_texture_sdf_data()
+                                c_tex = None
+                                s_tex = None
+                            compact_texture_sdf_data.append(tex_data)
+                            compact_texture_sdf_coarse_textures.append(c_tex)
+                            compact_texture_sdf_subgrid_textures.append(s_tex)
+                            compact_texture_sdf_subgrid_start_slots.append(
+                                tex_data.subgrid_start_slots if c_tex is not None else None
+                            )
                         else:
                             prim_mesh = _create_primitive_mesh(shape_type, shape_scale)
                             if prim_mesh is not None:

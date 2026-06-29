@@ -642,6 +642,39 @@ def test_empty_texture_sdf_data(test, device):
     test.assertFalse(empty.scale_baked)
 
 
+def test_hydroelastic_sphere_sdf_padding(test, device):
+    """Finalize hydroelastic sphere SDF with explicit SDF padding."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    body = builder.add_body()
+    cfg = newton.ModelBuilder.ShapeConfig(
+        is_hydroelastic=True,
+        gap=0.01,
+        sdf_padding=0.04,
+        sdf_max_resolution=8,
+    )
+    builder.add_shape_sphere(body, radius=0.5, cfg=cfg)
+
+    model = builder.finalize(device=device)
+    test.assertEqual(int(model._shape_sdf_index.numpy()[0]), 0)
+    test.assertEqual(len(model._texture_sdf_coarse_textures), 1)
+    test.assertIsNotNone(model._texture_sdf_coarse_textures[0])
+
+    tex_data = model._texture_sdf_data.numpy()[0]
+    np.testing.assert_allclose(np.array(tex_data["sdf_box_lower"]), [-0.54, -0.54, -0.54], atol=1.0e-6)
+    np.testing.assert_allclose(np.array(tex_data["sdf_box_upper"]), [0.54, 0.54, 0.54], atol=1.0e-6)
+    test.assertTrue(bool(tex_data["scale_baked"]))
+
+    query_points = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+    results = wp.zeros(1, dtype=float, device=device)
+    wp.launch(
+        _sample_texture_sdf_from_array_kernel,
+        dim=1,
+        inputs=[model._texture_sdf_data, 0, query_points, results],
+        device=device,
+    )
+    test.assertAlmostEqual(float(results.numpy()[0]), -0.5, delta=1.0e-4)
+
+
 def test_texture_sdf_quantization_uint16(test, device):
     """Build texture SDF with UINT16 quantization and verify sampling accuracy."""
     mesh = _create_box_mesh()
@@ -1377,6 +1410,12 @@ add_function_test(
 )
 add_function_test(TestTextureSDF, "test_texture_sdf_in_model", test_texture_sdf_in_model, devices=devices)
 add_function_test(TestTextureSDF, "test_empty_texture_sdf_data", test_empty_texture_sdf_data, devices=devices)
+add_function_test(
+    TestTextureSDF,
+    "test_hydroelastic_sphere_sdf_padding",
+    test_hydroelastic_sphere_sdf_padding,
+    devices=devices,
+)
 add_function_test(
     TestTextureSDF, "test_texture_sdf_quantization_uint16", test_texture_sdf_quantization_uint16, devices=devices
 )
