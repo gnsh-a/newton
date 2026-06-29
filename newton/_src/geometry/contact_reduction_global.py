@@ -535,6 +535,11 @@ class GlobalContactReducerData:
     # Optional hydroelastic data
     # contact_area: area of contact surface element (per contact)
     contact_area: wp.array[wp.float32]
+    # Linear hydro solver split for unreduced face contacts. ``position_depth.w``
+    # remains the source SDF depth used by reduction/debug paths; these fields carry
+    # the solver-facing stiffness and signed distance.
+    contact_stiffness: wp.array[wp.float32]
+    contact_phi0: wp.array[wp.float32]
 
     # Cached normal-bin hashtable entry index per contact
     contact_nbin_entry: wp.array[wp.int32]
@@ -772,9 +777,13 @@ class GlobalContactReducer:
         # Optional hydroelastic data arrays
         if store_hydroelastic_data:
             self.contact_area = wp.zeros(capacity, dtype=wp.float32, device=device)
+            self.contact_stiffness = wp.zeros(capacity, dtype=wp.float32, device=device)
+            self.contact_phi0 = wp.zeros(capacity, dtype=wp.float32, device=device)
             self.contact_nbin_entry = wp.zeros(capacity, dtype=wp.int32, device=device)
         else:
             self.contact_area = wp.zeros(0, dtype=wp.float32, device=device)
+            self.contact_stiffness = wp.zeros(0, dtype=wp.float32, device=device)
+            self.contact_phi0 = wp.zeros(0, dtype=wp.float32, device=device)
             self.contact_nbin_entry = wp.zeros(0, dtype=wp.int32, device=device)
 
         # Per-contact dedup flags for cross-entry deduplication during export
@@ -902,6 +911,8 @@ class GlobalContactReducer:
         data.capacity = self.capacity
         data.contact_fingerprints = self.contact_fingerprints
         data.contact_area = self.contact_area
+        data.contact_stiffness = self.contact_stiffness
+        data.contact_phi0 = self.contact_phi0
         data.contact_nbin_entry = self.contact_nbin_entry
         data.entry_k_eff = self.entry_k_eff
         data.agg_force = self.agg_force
