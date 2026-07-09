@@ -73,6 +73,20 @@
     </div>
 
     <div class="card">
+      <h2><span class="sw" style="background:var(--B)"></span>Body B orientation</h2>
+      <div class="row"><label>rot x</label>
+        <input id="rxBr" type="range" min="-3.14" max="3.14" step="0.01" value="0">
+        <input id="rxB" type="number" min="-3.14" max="3.14" step="0.01" value="0"></div>
+      <div class="row"><label>rot y</label>
+        <input id="ryBr" type="range" min="-3.14" max="3.14" step="0.01" value="0">
+        <input id="ryB" type="number" min="-3.14" max="3.14" step="0.01" value="0"></div>
+      <div class="row"><label>rot z</label>
+        <input id="rzBr" type="range" min="-3.14" max="3.14" step="0.01" value="0">
+        <input id="rzB" type="number" min="-3.14" max="3.14" step="0.01" value="0"></div>
+      <div class="hint">Euler XYZ [rad] · spheres are rotation-invariant</div>
+    </div>
+
+    <div class="card">
       <h2>Size</h2>
       <div class="row"><label><span class="sw" style="background:var(--A)"></span>A</label>
         <input id="raR" type="range" min="0.3" max="1.8" step="0.05" value="1.0">
@@ -114,8 +128,8 @@
       <label class="tog"><input type="checkbox" id="tAxes" checked> Axes (body B)</label>
       <div class="row" style="margin-top:7px"><label>Surface algo</label>
         <span class="seg" style="flex:1;min-width:0;margin:0 0 0 10px">
-          <button id="algMC" class="on">MC</button><button id="algMC33">MC33</button><button id="algMT">MT</button></span></div>
-      <div class="hint">MC = classic · MC33 = topological · MT = marching tetrahedra (pop-free)</div>
+          <button id="algMC" class="on">MC</button><button id="algMC33">MC33</button><button id="algMT">MT</button><button id="algAffine">Affine</button></span></div>
+      <div class="hint">MC = classic · MC33 = topological · MT = marching tetrahedra · Affine = per-cell plane (Drake-style)</div>
     </div>
 
     <div class="card">
@@ -265,7 +279,7 @@ const L  = 4.0;                  // grid A domain side (centered on A at origin)
 const LB = 4.0;                  // grid B domain side (centered on B)
 const cA = new THREE.Vector3(0,0,0);
 
-const S = { bx:1.6, by:1, bz:0, resA:24, resB:24, wA:1, wB:1, rA:1.0, rB:1.2,
+const S = { bx:1.6, by:1, bz:0, rxB:0, ryB:0, rzB:0, resA:24, resB:24, wA:1, wB:1, rA:1.0, rB:1.2,
             typeA:'box', typeB:'sphere',
             sph:true, grid:true, surf:true, edge:true, trim:false, axes:true, algo:'mc', inset:'A' };
 
@@ -282,17 +296,37 @@ function sdfBox(x,y,z,c,h){
 }
 const sdfShape = (x,y,z,c,type,size) => type==='box' ? sdfBox(x,y,z,c,size) : sdfSphere(x,y,z,c,size);
 
-// Grid B: bake phi_B on B's own (resB+1)^3 grid, then trilinearly resample it
-// at arbitrary world points (clamp-to-edge), mirroring a discrete SDF texture.
-let Bgrid=null, Bmin=null, Bh=0, Bn=0;
+// --- Rigid pose (rotation R + translation t) for a movable body. A is fixed at
+// the origin with identity pose, so A keeps calling sdfShape/gradShape with a
+// bare center directly — only B carries a live pose. ORIGIN lets the posed
+// wrappers (below) reuse the bare-center primitives after transforming to local.
+const ORIGIN = {x:0,y:0,z:0};
+function makePose(center, rx, ry, rz){
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(rx||0, ry||0, rz||0));
+  return { c: center, q, qInv: q.clone().invert() };
+}
+// world point -> body-local point:  x_local = R^-1 (x_world - t)
+function toLocal(x,y,z,pose){
+  return new THREE.Vector3(x-pose.c.x, y-pose.c.y, z-pose.c.z).applyQuaternion(pose.qInv);
+}
+// body-local direction -> world direction:  d_world = R d_local. The VALUE needs
+// no transform back — a rigid map preserves distance, so phi_local IS phi_world.
+function toWorldDir(v,pose){ return v.applyQuaternion(pose.q); }
+
+// Grid B: bake phi_B on B's own (resB+1)^3 grid in B's LOCAL frame (origin-
+// centered, so the bake is independent of B's position/orientation), then
+// transform world query points into that frame and trilinearly resample it
+// (clamp-to-edge) — a discrete SDF texture that rides along with the body.
+let Bgrid=null, Bmin=null, Bh=0, Bn=0, poseB=null;
 function bakeB(){
-  const c = cB(); Bn = S.resB; Bh = LB/Bn;
-  Bmin = new THREE.Vector3(c.x-LB/2, c.y-LB/2, c.z-LB/2);
+  Bn = S.resB; Bh = LB/Bn;
+  Bmin = new THREE.Vector3(-LB/2, -LB/2, -LB/2);   // B's local frame, centered at origin
   const s = Bn+1; Bgrid = new Float32Array(s*s*s);
   for(let k=0;k<s;k++) for(let j=0;j<s;j++) for(let i=0;i<s;i++)
-    Bgrid[(k*s+j)*s+i] = sdfShape(Bmin.x+i*Bh, Bmin.y+j*Bh, Bmin.z+k*Bh, c, S.typeB, S.rB);
+    Bgrid[(k*s+j)*s+i] = sdfShape(Bmin.x+i*Bh, Bmin.y+j*Bh, Bmin.z+k*Bh, ORIGIN, S.typeB, S.rB);
 }
 function sampleB(x,y,z){
+  const l=toLocal(x,y,z,poseB); x=l.x; y=l.y; z=l.z;   // world -> B local (grid lives in local frame)
   const n=Bn, s=n+1;
   let u=(x-Bmin.x)/Bh, v=(y-Bmin.y)/Bh, w=(z-Bmin.z)/Bh;
   u=Math.min(n,Math.max(0,u)); v=Math.min(n,Math.max(0,v)); w=Math.min(n,Math.max(0,w));
@@ -312,11 +346,14 @@ function sampleB(x,y,z){
 // pick active voxels (D changes sign AND voxel overlaps both shapes), march.
 // ============================================================================
 let tris=[], activeVox=[], nTri=0, area=0;
+// Affine mode keeps the per-cell contact polygon (not just triangles) so edges
+// can be drawn as polygon outlines instead of triangle-fan diagonals.
+let surfPolys=[];
 function compute(){
+  poseB = makePose(cB(), S.rxB, S.ryB, S.rzB);   // rebuilt once per compute, reused for every sample
   bakeB();
   const N=S.resA, h=L/N, s=N+1;
   const minA=new THREE.Vector3(-L/2,-L/2,-L/2);
-  const c=cB();
   const phiA=new Float32Array(s*s*s), phiB=new Float32Array(s*s*s);
   for(let k=0;k<s;k++) for(let j=0;j<s;j++) for(let i=0;i<s;i++){
     const x=minA.x+i*h, y=minA.y+j*h, z=minA.z+k*h, idx=(k*s+j)*s+i;
@@ -324,9 +361,15 @@ function compute(){
     phiB[idx]=sampleB(x,y,z);
   }
 
-  tris=[]; activeVox=[]; area=0;
+  tris=[]; activeVox=[]; area=0; surfPolys=[];
   const D=new Array(8), P=new Array(8), gA=new Array(8), gB=new Array(8);
   for(let k=0;k<N;k++) for(let j=0;j<N;j++) for(let i=0;i<N;i++){
+    // affine mode evaluates fields analytically at the cell center (no corner
+    // sampling), so it does its own gate + emit and skips the trilinear path.
+    if(S.algo==='affine'){
+      if(affineEmit(i,j,k,h,minA,tris,S.trim)) activeVox.push({i,j,k,h,m:minA});
+      continue;
+    }
     let dMin=Infinity, dMax=-Infinity, insideBoth=false;
     for(let cc=0;cc<8;cc++){
       const ci=i+CORNER[cc][0], cj=j+CORNER[cc][1], ck=k+CORNER[cc][2];
@@ -425,6 +468,96 @@ function mtEmit(D,P,gA,gB,out,clip){
                 xvert(i1,o1,D,P,gA,gB), xvert(i1,o0,D,P,gA,gB)], out, clip);
     }
   }
+}
+
+// ----------------------------------------------------------------------------
+// Affine (cell-local) mode — Drake-style. Each cell models both fields as a
+// plane through its center: phi(x) = phi_c + grad_phi_c . (x - x_c), evaluated
+// ANALYTICALLY at the center (no corner sampling, no trilinear resample). The
+// equilibrium field D = wA*phiA - wB*phiB is then exactly affine, so D=0 is an
+// exact plane: slice the cell cube by it -> one convex polygon, clip to the
+// overlap, fan. No curved patch => no interior pops (only O(h^2) seams at cell
+// boundaries, since neighbouring cells carry independent gradients).
+// ----------------------------------------------------------------------------
+const gradSphere=(x,y,z,c)=>{ const dx=x-c.x,dy=y-c.y,dz=z-c.z, L=Math.hypot(dx,dy,dz)||1;
+  return [dx/L,dy/L,dz/L]; };
+function gradBox(x,y,z,c,h){
+  const dx=x-c.x,dy=y-c.y,dz=z-c.z;
+  const sx=Math.sign(dx)||1, sy=Math.sign(dy)||1, sz=Math.sign(dz)||1;
+  const qx=Math.abs(dx)-h, qy=Math.abs(dy)-h, qz=Math.abs(dz)-h;
+  if(qx>0||qy>0||qz>0){                                   // outside: outward normal
+    const mx=Math.max(qx,0),my=Math.max(qy,0),mz=Math.max(qz,0), L=Math.hypot(mx,my,mz)||1;
+    return [sx*mx/L, sy*my/L, sz*mz/L];
+  }
+  if(qx>=qy && qx>=qz) return [sx,0,0];                   // inside: axis of nearest face
+  if(qy>=qz) return [0,sy,0];
+  return [0,0,sz];
+}
+const gradShape=(x,y,z,c,type,size)=> type==='box'?gradBox(x,y,z,c,size):gradSphere(x,y,z,c);
+
+// Posed analytic query for a body carrying a live pose (B): transform the point
+// into the body's local frame, evaluate the bare-center primitive there, and
+// rotate the gradient back to world. Value is returned as-is (isometry-invariant).
+function sdfShapePosed(x,y,z,pose,type,size){
+  const l=toLocal(x,y,z,pose);
+  return sdfShape(l.x,l.y,l.z,ORIGIN,type,size);
+}
+function gradShapePosed(x,y,z,pose,type,size){
+  const l=toLocal(x,y,z,pose);
+  const gl=gradShape(l.x,l.y,l.z,ORIGIN,type,size);
+  return toWorldDir(new THREE.Vector3(gl[0],gl[1],gl[2]),pose).toArray();
+}
+
+// Order a set of coplanar crossing-verts into a convex ring (sort by angle in a
+// basis of the plane whose normal is n), so clipHalf/fan see a proper polygon.
+function orderRing(verts,n){
+  let cx=0,cy=0,cz=0; for(const w of verts){cx+=w.p[0];cy+=w.p[1];cz+=w.p[2];}
+  const m=verts.length; cx/=m; cy/=m; cz/=m;
+  const nl=Math.hypot(n[0],n[1],n[2])||1, nx=n[0]/nl, ny=n[1]/nl, nz=n[2]/nl;
+  let tx=1,ty=0,tz=0; if(Math.abs(nx)>0.9){tx=0;ty=1;}     // pick t not parallel to n
+  const tn=tx*nx+ty*ny+tz*nz; let ux=tx-tn*nx, uy=ty-tn*ny, uz=tz-tn*nz;
+  const ul=Math.hypot(ux,uy,uz)||1; ux/=ul; uy/=ul; uz/=ul; // u in-plane
+  const vx=ny*uz-nz*uy, vy=nz*ux-nx*uz, vz=nx*uy-ny*ux;      // v = n x u
+  const ang=w=>{ const dx=w.p[0]-cx,dy=w.p[1]-cy,dz=w.p[2]-cz;
+    return Math.atan2(dx*vx+dy*vy+dz*vz, dx*ux+dy*uy+dz*uz); };
+  return verts.sort((A,B)=>ang(A)-ang(B));
+}
+
+// Emit one cell's contact polygon under the affine model. Does its own gate
+// (affine D crosses zero AND the cell overlaps both bodies). Returns true if a
+// polygon was produced (so the caller can mark the voxel active).
+function affineEmit(i,j,k,h,minA,out,clip){
+  const xc=minA.x+(i+0.5)*h, yc=minA.y+(j+0.5)*h, zc=minA.z+(k+0.5)*h;
+  // A: bare center (fixed, identity pose).  B: posed analytic query (poseB set in compute()).
+  const pAc=sdfShape(xc,yc,zc,cA,S.typeA,S.rA),  pBc=sdfShapePosed(xc,yc,zc,poseB,S.typeB,S.rB);
+  const gAc=gradShape(xc,yc,zc,cA,S.typeA,S.rA), gBc=gradShapePosed(xc,yc,zc,poseB,S.typeB,S.rB);
+  const Dc=S.wA*pAc - S.wB*pBc;                            // affine combined field + gradient
+  const gD=[S.wA*gAc[0]-S.wB*gBc[0], S.wA*gAc[1]-S.wB*gBc[1], S.wA*gAc[2]-S.wB*gBc[2]];
+  const D=new Array(8), P=new Array(8), gA=new Array(8), gB=new Array(8);
+  let dMin=Infinity, dMax=-Infinity, insideBoth=false;
+  for(let cc=0;cc<8;cc++){
+    const px=minA.x+(i+CORNER[cc][0])*h, py=minA.y+(j+CORNER[cc][1])*h, pz=minA.z+(k+CORNER[cc][2])*h;
+    const ex=px-xc, ey=py-yc, ez=pz-zc;
+    const a=pAc+gAc[0]*ex+gAc[1]*ey+gAc[2]*ez;             // affine phiA, phiB at the corner
+    const b=pBc+gBc[0]*ex+gBc[1]*ey+gBc[2]*ez;
+    const d=Dc+gD[0]*ex+gD[1]*ey+gD[2]*ez;
+    D[cc]=d; gA[cc]=a; gB[cc]=b; P[cc]=[px,py,pz];
+    if(d<dMin)dMin=d; if(d>dMax)dMax=d; if(a<0 && b<0) insideBoth=true;
+  }
+  if(!(dMin<0 && dMax>=0 && insideBoth)) return false;     // same gate as the MC path
+  const cr=[];                                             // zero-crossings on the 12 edges
+  for(let e=0;e<12;e++){ const a=EDGE[e][0], b=EDGE[e][1];
+    if((D[a]<0)!==(D[b]<0)) cr.push(xvert(a,b,D,P,gA,gB)); }
+  if(cr.length<3) return false;
+  let poly=orderRing(cr,gD);
+  if(clip){ poly=clipHalf(poly,'pa'); poly=clipHalf(poly,'pb'); }  // trim to overlap
+  if(poly.length<3) return false;
+  surfPolys.push(poly.map(v=>v.p));                        // keep the polygon (for outline edges)
+  for(let t=1;t+1<poly.length;t++)                         // fan only for the filled mesh
+    out.push(poly[0].p[0],poly[0].p[1],poly[0].p[2],
+             poly[t].p[0],poly[t].p[1],poly[t].p[2],
+             poly[t+1].p[0],poly[t+1].p[1],poly[t+1].p[2]);
+  return true;
 }
 
 // Marching-cubes polygonizer used by the inset (plain, no clip / no overlap).
@@ -2504,8 +2637,20 @@ function rebuild(){
     polygonOffset:true, polygonOffsetFactor:1, polygonOffsetUnits:1}));
   scene.add(surfMesh);
 
-  // contact-surface triangle edges (black)
-  surfEdges=new THREE.LineSegments(new THREE.WireframeGeometry(g),
+  // contact-surface edges (black). Affine keeps polygon outlines (no fan
+  // diagonals); MC/MC33/MT draw every triangle edge via WireframeGeometry.
+  let edgeGeo;
+  if(surfPolys.length){
+    const seg=[];
+    for(const poly of surfPolys){ const n=poly.length;
+      for(let a=0;a<n;a++){ const b=(a+1)%n;
+        seg.push(poly[a][0],poly[a][1],poly[a][2], poly[b][0],poly[b][1],poly[b][2]); } }
+    edgeGeo=new THREE.BufferGeometry();
+    edgeGeo.setAttribute('position', new THREE.Float32BufferAttribute(seg,3));
+  } else {
+    edgeGeo=new THREE.WireframeGeometry(g);
+  }
+  surfEdges=new THREE.LineSegments(edgeGeo,
     new THREE.LineBasicMaterial({color:0x000000,transparent:true,opacity:0.85}));
   scene.add(surfEdges);
 
@@ -2531,7 +2676,9 @@ function applyVis(){
 function placeBodies(){
   applyBody(sphA,S.typeA,S.rA); sphA.position.copy(cA);
   applyBody(sphB,S.typeB,S.rB); sphB.position.copy(cB());
+  sphB.quaternion.setFromEuler(new THREE.Euler(S.rxB,S.ryB,S.rzB));   // match B's SDF pose
   bAxes.position.copy(cB());
+  bAxes.quaternion.copy(sphB.quaternion);
 }
 
 // ============================================================================
@@ -2564,6 +2711,7 @@ function bindTog(id,key){ document.getElementById(id).addEventListener('change',
   S[key]=e.target.checked; applyVis(); }); }
 
 bindAxis('bx','bx','bxr'); bindAxis('by','by','byr'); bindAxis('bz','bz','bzr');
+bindAxis('rxB','rxB','rxBr'); bindAxis('ryB','ryB','ryBr'); bindAxis('rzB','rzB','rzBr');
 bindRes('resA','rA','rAr'); bindRes('resB','rB','rBr');
 bindRadius('rA','ra','raR'); bindRadius('rB','rb','rbR');
 bindNum('wA','wA'); bindNum('wB','wB');
@@ -2573,7 +2721,7 @@ bindTog('tAxes','axes');
 document.getElementById('tTrim').addEventListener('change',e=>{ S.trim=e.target.checked; rebuild(); });
 
 // surface-algorithm selector (MC / MC33 / MT) — mutually exclusive, geometry changes -> rebuild
-const algoBtns={mc:document.getElementById('algMC'), mc33:document.getElementById('algMC33'), mt:document.getElementById('algMT')};
+const algoBtns={mc:document.getElementById('algMC'), mc33:document.getElementById('algMC33'), mt:document.getElementById('algMT'), affine:document.getElementById('algAffine')};
 function setAlgo(a){ S.algo=a; for(const k in algoBtns) algoBtns[k].classList.toggle('on',k===a); rebuild(); }
 for(const k in algoBtns) algoBtns[k].addEventListener('click',()=>setAlgo(k));
 
