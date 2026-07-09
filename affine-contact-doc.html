@@ -1,0 +1,337 @@
+<meta charset="utf-8">
+<title>The Affine Contact-Surface Method</title>
+<style>
+  :root{
+    --bg:#f4f5f7; --panel:#ffffff; --edge:#dfe3e8; --txt:#1f2329; --dim:#6b7280;
+    --A:#3b6fd6; --B:#e08a3c; --surf:#0f9b8e; --accent:#6c4fd6; --code:#eef0f3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:15px/1.65 ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif;}
+  header{padding:34px 22px 18px;max-width:820px;margin:0 auto;}
+  header h1{margin:0;font-size:26px;font-weight:680;letter-spacing:-.01em}
+  header p{margin:8px 0 0;color:var(--dim);font-size:15px;max-width:680px}
+  main{max-width:820px;margin:0 auto;padding:0 22px 80px}
+  section{margin:34px 0}
+  h2{font-size:13px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);
+    margin:0 0 4px;padding-top:14px;border-top:1px solid var(--edge)}
+  h2 .n{color:var(--dim);margin-right:8px}
+  h3{font-size:16px;font-weight:640;margin:20px 0 4px}
+  p{margin:10px 0}
+  .fa{color:var(--A);font-weight:600}
+  .fb{color:var(--B);font-weight:600}
+  .fd{color:var(--surf);font-weight:600}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em;
+    background:var(--code);padding:1px 5px;border-radius:4px}
+  .math{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;
+    background:var(--panel);border:1px solid var(--edge);border-left:3px solid var(--accent);
+    border-radius:8px;padding:12px 16px;margin:14px 0;overflow-x:auto;line-height:1.9}
+  pre{background:var(--panel);border:1px solid var(--edge);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;margin:14px 0;font-size:13px;line-height:1.6}
+  pre .c{color:var(--dim)}
+  pre .k{color:var(--accent)}
+  ol,ul{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  .callout{background:#fff;border:1px solid var(--edge);border-radius:10px;padding:14px 16px;margin:16px 0;
+    box-shadow:0 1px 2px rgba(16,24,40,.04)}
+  .callout .lab{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--accent);
+    display:block;margin-bottom:5px}
+  figure{margin:22px 0;text-align:center}
+  figure svg{max-width:100%;height:auto;border:1px solid var(--edge);border-radius:10px;background:#fbfcfd}
+  figcaption{font-size:13px;color:var(--dim);margin-top:8px;text-align:center;max-width:640px;
+    margin-left:auto;margin-right:auto}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--edge);vertical-align:top}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--dim);font-weight:700}
+  .lead{font-size:16px}
+  .tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:20px;
+    border:1px solid var(--edge);color:var(--dim);vertical-align:middle}
+</style>
+
+<header>
+  <h1>The Affine Contact-Surface Method</h1>
+  <p>How the <b>Affine</b> mode in <code>contact-surface.html</code> builds a contact patch between two
+     signed-distance fields — one cell at a time, with each body posed in its own frame. A companion to the
+     interactive demo.</p>
+</header>
+
+<main>
+
+<section>
+  <h2><span class="n">1</span>The contact surface is an equipressure level set</h2>
+  <p class="lead">Two bodies <span class="fa">A</span> and <span class="fb">B</span> each carry a
+     <b>signed distance field</b> (SDF): <span class="fa">φ<sub>A</sub>(x)</span> and
+     <span class="fb">φ<sub>B</sub>(x)</span>, negative inside the body, zero on its surface, positive outside.
+     Each is also given a stiffness weight <span class="fa">w<sub>A</sub></span>,
+     <span class="fb">w<sub>B</sub></span> — think of it as a pressure-per-unit-penetration modulus.</p>
+  <p>Where the two weighted fields balance, we place the contact surface. That balance point is the zero set
+     of the <b>difference field</b>:</p>
+  <div class="math">
+    <span class="fd">D(x)</span> = <span class="fa">w<sub>A</sub>·φ<sub>A</sub>(x)</span> &minus; <span class="fb">w<sub>B</sub>·φ<sub>B</sub>(x)</span>
+    &nbsp;&nbsp;→&nbsp;&nbsp; contact surface = { x : <span class="fd">D(x) = 0</span> }
+  </div>
+  <p>Raising <span class="fa">w<sub>A</sub></span> makes <span class="fa">φ<sub>A</sub></span> "count for more,"
+     so the balance surface is pushed toward <span class="fb">B</span> — exactly Drake's hydroelastic
+     equipressure patch, with SDFs standing in for pressure fields.</p>
+
+  <figure>
+    <svg viewBox="0 0 640 210" role="img" aria-label="Cross-section of two overlapping bodies and the contact surface between them">
+      <circle cx="230" cy="105" r="92" fill="#3b6fd6" fill-opacity="0.10" stroke="#3b6fd6" stroke-width="2"/>
+      <circle cx="410" cy="105" r="100" fill="#e08a3c" fill-opacity="0.10" stroke="#e08a3c" stroke-width="2"/>
+      <path d="M 318 20 Q 306 105 318 190" fill="none" stroke="#0f9b8e" stroke-width="3.5"/>
+      <text x="150" y="110" fill="#3b6fd6" font-size="15" font-weight="600">A</text>
+      <text x="470" y="110" fill="#e08a3c" font-size="15" font-weight="600">B</text>
+      <text x="322" y="205" fill="#0f9b8e" font-size="12.5" font-weight="600">D = 0</text>
+      <text x="250" y="52" fill="#6b7280" font-size="12">D &lt; 0</text>
+      <text x="360" y="52" fill="#6b7280" font-size="12">D &gt; 0</text>
+    </svg>
+    <figcaption>The contact surface (<span class="fd">teal</span>) sits inside the overlap where
+      <span class="fa">w<sub>A</sub>φ<sub>A</sub></span> = <span class="fb">w<sub>B</sub>φ<sub>B</sub></span>.
+      It bulges toward whichever body is softer (lower weight).</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2><span class="n">2</span>Why "affine": one plane per cell</h2>
+  <p>Solving <span class="fd">D(x)=0</span> exactly for general fields is intractable, so space is diced into
+     a grid of cells and each cell approximates <span class="fd">D</span> locally. The affine method's choice is
+     the simplest non-trivial one: model each field inside a cell as a <b>plane</b> — a first-order Taylor
+     expansion about the cell center <code>x_c</code>.</p>
+  <div class="math">
+    <span class="fa">φ<sub>A</sub>(x)</span> ≈ <span class="fa">φ<sub>A</sub>(x_c)</span> + <span class="fa">∇φ<sub>A</sub>(x_c)</span>·(x − x_c)<br>
+    <span class="fb">φ<sub>B</sub>(x)</span> ≈ <span class="fb">φ<sub>B</sub>(x_c)</span> + <span class="fb">∇φ<sub>B</sub>(x_c)</span>·(x − x_c)<br>
+    <span class="fd">D(x)</span>&nbsp;&nbsp;≈ <span class="fd">D(x_c)</span> + <span class="fd">∇D(x_c)</span>·(x − x_c),&nbsp;&nbsp; <span class="fd">∇D</span> = <span class="fa">w<sub>A</sub>∇φ<sub>A</sub></span> − <span class="fb">w<sub>B</sub>∇φ<sub>B</sub></span>
+  </div>
+  <p>Because <span class="fd">D</span> is now <b>exactly linear</b> across the cell, its zero set is an
+     <b>exact plane</b>, and a plane cutting a cube gives one convex polygon. That's the whole payoff: no curved
+     patch to approximate, so no interior "pops" as bodies move — only small <code>O(h²)</code> seams between
+     cells, because neighbouring cells carry independent gradients.</p>
+  <p>The entire field for a cell is therefore just <b>one value + one gradient per body</b>, evaluated at the
+     center. Steps 1–3 below are: build those (Step 1), decide whether the cell matters (Step 2), and slice the
+     plane out (Step 3).</p>
+</section>
+
+<section>
+  <h2><span class="n">3</span>Step 1 — Build the field, each body in its own frame</h2>
+  <p>This is the step the pose change touched. Each body is evaluated <b>analytically</b> — no grid, no
+     interpolation — but a movable body must be evaluated in <i>its own local frame</i>, because its SDF formula
+     (a box's face logic, say) is only valid when the body is axis-aligned at the origin.</p>
+
+  <h3><span class="tag">body A</span> Fixed at the origin — evaluate directly</h3>
+  <p><span class="fa">A</span> never moves: identity rotation, zero translation. So its SDF and gradient are read
+     straight off the analytic formula in world coordinates, with nothing to transform. In code this is the
+     deliberately "bare" path — <code>sdfShape(x_c, cA, …)</code>, <code>gradShape(x_c, cA, …)</code>.</p>
+
+  <h3><span class="tag">body B</span> Movable — transform in, evaluate, rotate the gradient out</h3>
+  <p><span class="fb">B</span> carries a rigid pose <code>(R, t)</code> — a rotation and a translation. Evaluating
+     it at a world point <code>x_c</code> is a three-part round-trip:</p>
+  <ol>
+    <li><b>Transform the query point into B's local frame:</b>
+      <span style="font-family:monospace">x_local = R⁻¹·(x_c − t)</span>.</li>
+    <li><b>Evaluate B's analytic primitive there</b> (box / sphere, axis-aligned in local space) → gives
+      <span class="fb">φ<sub>local</sub></span> and <span class="fb">∇φ<sub>local</sub></span>.</li>
+    <li><b>Map back to world:</b> the value needs <i>no</i> transform, the gradient <i>does</i> — see the two
+      rules below.</li>
+  </ol>
+
+  <div class="math">
+    value:&nbsp;&nbsp;&nbsp;&nbsp;<span class="fb">φ<sub>B</sub>(x_c)</span> = <span class="fb">φ<sub>local</sub>(x_local)</span>&nbsp;&nbsp;&nbsp;<span style="color:var(--dim)">— identity: a rigid map preserves distance</span><br>
+    gradient:&nbsp;<span class="fb">∇φ<sub>B</sub>(x_c)</span> = R · <span class="fb">∇φ<sub>local</sub>(x_local)</span>&nbsp;&nbsp;&nbsp;<span style="color:var(--dim)">— rotate the direction back into world</span>
+  </div>
+
+  <div class="callout">
+    <span class="lab">The key asymmetry</span>
+    The <b>value</b> is a scalar distance — a rotation and translation don't change how far a point is from a
+    surface, so <span class="fb">φ<sub>local</sub></span> <i>is</i> the world value, no correction. The
+    <b>gradient</b> is a direction — it was computed assuming the body was axis-aligned, so it must be rotated
+    by <code>R</code> to point correctly in world space. Value: identity. Gradient: rotate. That single
+    distinction is the whole pose change.
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 720 250" role="img" aria-label="The pose round-trip for body B: world to local, evaluate, gradient rotated back to world">
+      <!-- world (left) -->
+      <g transform="translate(30,40)">
+        <text x="60" y="-14" fill="#6b7280" font-size="12" font-weight="700">WORLD</text>
+        <g transform="rotate(24 60 90)">
+          <rect x="18" y="48" width="94" height="94" fill="#e08a3c" fill-opacity="0.12" stroke="#e08a3c" stroke-width="2"/>
+        </g>
+        <circle cx="92" cy="70" r="4" fill="#6c4fd6"/>
+        <text x="98" y="66" fill="#6c4fd6" font-size="12">x_c</text>
+        <text x="6" y="178" fill="#6b7280" font-size="11.5">rotated box, query point</text>
+      </g>
+      <!-- arrow 1 -->
+      <g transform="translate(210,110)">
+        <line x1="0" y1="0" x2="70" y2="0" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ah)"/>
+        <text x="-2" y="-10" fill="#6b7280" font-size="11">R⁻¹·(x−t)</text>
+      </g>
+      <!-- local (middle) -->
+      <g transform="translate(300,40)">
+        <text x="46" y="-14" fill="#6b7280" font-size="12" font-weight="700">LOCAL</text>
+        <rect x="18" y="48" width="94" height="94" fill="#e08a3c" fill-opacity="0.12" stroke="#e08a3c" stroke-width="2"/>
+        <circle cx="86" cy="78" r="4" fill="#6c4fd6"/>
+        <line x1="86" y1="78" x2="128" y2="70" stroke="#e08a3c" stroke-width="2.5" marker-end="url(#ao)"/>
+        <text x="6" y="178" fill="#6b7280" font-size="11.5">eval φ, ∇φ (axis-aligned)</text>
+      </g>
+      <!-- arrow 2 -->
+      <g transform="translate(478,110)">
+        <line x1="0" y1="0" x2="70" y2="0" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ah)"/>
+        <text x="4" y="-10" fill="#6b7280" font-size="11">R·∇φ</text>
+      </g>
+      <!-- world gradient (right) -->
+      <g transform="translate(560,40)">
+        <text x="30" y="-14" fill="#6b7280" font-size="12" font-weight="700">WORLD ∇</text>
+        <g transform="rotate(24 60 90)">
+          <rect x="18" y="48" width="94" height="94" fill="#e08a3c" fill-opacity="0.06" stroke="#e08a3c" stroke-width="1.5" stroke-dasharray="4 3"/>
+        </g>
+        <circle cx="86" cy="72" r="4" fill="#6c4fd6"/>
+        <line x1="86" y1="72" x2="126" y2="80" stroke="#e08a3c" stroke-width="2.5" marker-end="url(#ao)"/>
+        <text x="4" y="178" fill="#6b7280" font-size="11.5">gradient tilts with body</text>
+      </g>
+      <defs>
+        <marker id="ah" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="#6b7280"/></marker>
+        <marker id="ao" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="#e08a3c"/></marker>
+      </defs>
+    </svg>
+    <figcaption>Body B's round-trip. The query point is rotated into the body's local frame where the box is
+      axis-aligned and the analytic formula applies; the resulting gradient is rotated back so it tilts with the
+      body. The scalar value is carried across unchanged.</figcaption>
+  </figure>
+
+  <p><b>Spheres are exempt.</b> A sphere's SDF and gradient are rotation-invariant, so a sphere B produces the
+     same result with or without the round-trip — only a rotated <i>box</i> B differs from the old
+     translation-only code.</p>
+</section>
+
+<section>
+  <h2><span class="n">4</span>Step 2 — Which cells matter (two gates)</h2>
+  <p>The cell's two per-body affine fields (the linearizations of <span class="fa">φ<sub>A</sub></span> and
+     <span class="fb">φ<sub>B</sub></span> from Step 1) are extrapolated to its 8 corners by pure arithmetic — no
+     new field evaluations, just <code>a = φ<sub>A</sub>(x_c) + ∇φ<sub>A</sub>·e</code> and
+     <code>b = φ<sub>B</sub>(x_c) + ∇φ<sub>B</sub>·e</code> for each corner offset <code>e</code>. Their weighted
+     difference <code>d = w<sub>A</sub>·a − w<sub>B</sub>·b</code> is formed at each corner too. A cell is kept
+     only if <b>both</b> gates pass:</p>
+  <ol>
+    <li><b>Gate 1 — sign change:</b> <span class="fd">d</span> is negative at some corner and non-negative at
+      another (<code>dMin &lt; 0 ≤ dMax</code>). The plane <span class="fd">D=0</span> actually cuts the cell.</li>
+    <li><b>Gate 2 — real overlap:</b> some corner has <span class="fa">a &lt; 0</span> <b>and</b>
+      <span class="fb">b &lt; 0</span> — it's genuinely inside both bodies.</li>
+  </ol>
+  <div class="callout">
+    <span class="lab">Why gate 2 is needed</span>
+    <span class="fd">D</span> is a difference of two weighted fields, so it can cross zero far out in empty
+    space where the fields happen to balance but neither body is present. Gate 1 alone would light up a whole
+    trailing band of those phantom cells; gate 2 keeps only cells inside the true geometric overlap.
+  </div>
+  <p>Because the corner extrapolation uses <b>world-space</b> gradients and world offsets, this step is
+     automatically correct for a rotated B — nothing here changed.</p>
+</section>
+
+<section>
+  <h2><span class="n">5</span>Step 3 — Slice the plane into a polygon</h2>
+  <p>For a surviving cell:</p>
+  <ol>
+    <li><b>Edge crossings.</b> Walk the 12 cube edges; wherever <span class="fd">d</span> changes sign, place the
+      crossing by linear interpolation. This is <b>exact</b>, not approximate, because <span class="fd">D</span>
+      is affine inside the cell. Both <span class="fa">φ<sub>A</sub></span> and <span class="fb">φ<sub>B</sub></span>
+      are carried along the interpolation for the clip step.</li>
+    <li><b>Order the ring.</b> All crossings lie on one plane (<span class="fd">D=0</span> is linear), but come
+      out in arbitrary edge order — project into an in-plane basis and sort by angle to form a convex polygon.</li>
+    <li><b>Trim (optional).</b> Clip the polygon to the real overlap with Sutherland–Hodgman: once against
+      <span class="fa">φ<sub>A</sub> ≤ 0</span>, once against <span class="fb">φ<sub>B</sub> ≤ 0</span>.</li>
+    <li><b>Emit.</b> Keep the raw polygon for the outline; fan-triangulate it for the rendered mesh.</li>
+  </ol>
+
+  <figure>
+    <svg viewBox="0 0 640 220" role="img" aria-label="One cell: corners tagged by sign, the affine plane crossing its edges, and the extracted polygon">
+      <!-- cell -->
+      <rect x="240" y="35" width="150" height="150" fill="none" stroke="#c7ccd3" stroke-width="1.5"/>
+      <!-- center + gradient of D -->
+      <circle cx="315" cy="110" r="3.5" fill="#6c4fd6"/>
+      <line x1="315" y1="110" x2="360" y2="86" stroke="#0f9b8e" stroke-width="2" marker-end="url(#ad)"/>
+      <text x="352" y="80" fill="#0f9b8e" font-size="11">∇D</text>
+      <!-- D=0 line through cell -->
+      <line x1="262" y1="185" x2="388" y2="60" stroke="#0f9b8e" stroke-width="3"/>
+      <!-- crossings -->
+      <circle cx="240" cy="163" r="4" fill="#0f9b8e"/>
+      <circle cx="371" cy="35" r="4" fill="#0f9b8e"/>
+      <!-- corner sign tags -->
+      <text x="222" y="30" fill="#3b6fd6" font-size="12" font-weight="700">−</text>
+      <text x="393" y="30" fill="#6b7280" font-size="12" font-weight="700">+</text>
+      <text x="222" y="200" fill="#3b6fd6" font-size="12" font-weight="700">−</text>
+      <text x="393" y="200" fill="#6b7280" font-size="12" font-weight="700">+</text>
+      <text x="250" y="215" fill="#6b7280" font-size="11.5">corners tagged by sign of D · plane cuts two edges</text>
+      <!-- label -->
+      <text x="30" y="100" fill="#6b7280" font-size="13" font-weight="600">one cell</text>
+      <text x="30" y="118" fill="#6b7280" font-size="11.5">→ one exact</text>
+      <text x="30" y="134" fill="#6b7280" font-size="11.5">planar polygon</text>
+      <defs>
+        <marker id="ad" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="#0f9b8e"/></marker>
+      </defs>
+    </svg>
+    <figcaption>Inside a kept cell the affine <span class="fd">D=0</span> plane meets the cube boundary in a
+      convex polygon. In 3D the plane crosses several edges; the crossings are exact because
+      <span class="fd">D</span> is linear here.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2><span class="n">6</span>The whole cell, in pseudocode</h2>
+  <p>Mirrors <code>affineEmit</code> in <code>contact-surface.html</code>:</p>
+  <pre><span class="c">// poseB = (R, t) built once per frame from the Euler sliders; A is identity.</span>
+<span class="k">for each</span> cell with center x_c, size h:
+    <span class="c">// --- Step 1: field build ---</span>
+    φA, ∇φA = sdf/grad of A at x_c            <span class="c">// bare — A fixed at origin</span>
+    xL      = R⁻¹·(x_c − t)                    <span class="c">// B: point into local frame</span>
+    φB      = sdfLocal(xL)                     <span class="c">// value: no transform back</span>
+    ∇φB     = R · gradLocal(xL)                <span class="c">// gradient: rotate back</span>
+    Dc      = wA·φA − wB·φB
+    ∇D      = wA·∇φA − wB·∇φB
+
+    <span class="c">// --- Step 2: extrapolate to 8 corners, gate ---</span>
+    <span class="k">for each</span> corner offset e:
+        a = φA + ∇φA·e ; b = φB + ∇φB·e ; d = Dc + ∇D·e
+    <span class="k">if not</span> (min d &lt; 0 ≤ max d)            : skip   <span class="c">// gate 1: sign change</span>
+    <span class="k">if not</span> (any corner has a&lt;0 and b&lt;0)   : skip   <span class="c">// gate 2: real overlap</span>
+
+    <span class="c">// --- Step 3: slice + emit ---</span>
+    crossings = exact D=0 points on the 12 edges
+    poly      = orderRing(crossings)
+    <span class="k">if</span> trim: poly = clip(poly, a≤0); clip(poly, b≤0)
+    emit poly  <span class="c">// outline + fan-triangulated mesh</span></pre>
+</section>
+
+<section>
+  <h2><span class="n">7</span>How the other modes differ</h2>
+  <p>The demo's MC / MC33 / MT modes reach the same field <span class="fd">D = w<sub>A</sub>φ<sub>A</sub> −
+     w<sub>B</sub>φ<sub>B</sub></span>, but source <span class="fb">φ<sub>B</sub></span> differently — and that's
+     the only real difference between the pipelines:</p>
+  <table>
+    <tr><th>Mode</th><th>How φ<sub>B</sub> is obtained</th><th>Rotation handling</th></tr>
+    <tr><td>Affine</td><td>analytic, per cell center, exact</td><td>point → local, gradient rotated back</td></tr>
+    <tr><td>MC / MC33 / MT</td><td>baked on B's grid, trilinearly resampled at A's corners</td><td>grid baked in B's local frame; sample transforms the query point in</td></tr>
+  </table>
+  <p>Both share one pose layer, so rotating B keeps all four modes consistent. The MC/MT family keeps its
+     deliberate resampling error (that's what the demo's "SDF fit" inset exists to show); affine stays fully
+     analytic with no grid.</p>
+</section>
+
+<section>
+  <h2><span class="n">8</span>Trade-offs in one breath</h2>
+  <ul>
+    <li><b>Wins:</b> each cell's patch is an exact plane-cube slice — no fixed-triangulation topology flips
+      (MC's interior pops), no tet artifacts (MT's fix for them). Triangles are born at zero area and grow
+      smoothly as bodies move.</li>
+    <li><b>Cost:</b> neighbouring cells compute independent gradients from their own centers, so their planes
+      don't perfectly meet — <code>O(h²)</code> seams at cell boundaries instead of one continuous surface.
+      Refining the grid shrinks the seams.</li>
+    <li><b>Requirement:</b> needs a value <i>and</i> a gradient per body per cell. Trivial for analytic
+      primitives (closed-form gradient); for a baked/mesh body it would need a baked gradient field or finite
+      differences — the analytic path sidesteps that entirely.</li>
+  </ul>
+</section>
+
+</main>
