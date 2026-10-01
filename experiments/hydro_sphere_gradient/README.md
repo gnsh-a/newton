@@ -6,7 +6,7 @@
 For [issue #3503](https://github.com/newton-physics/newton/issues/3503).
 Compares the original contact springs with an analytical sphere-gradient
 correction.
-Production code is unchanged from baseline `7fa94b3e700f7cc7f0425e4dfeb33facc7463442`.
+Production code is unchanged from upstream `4d8216940fa953624f989c60d4c67f63d8452401`.
 
 ## Run
 
@@ -52,7 +52,7 @@ Errors below are RMS displacement error divided by the reference amplitude:
 |---|---:|---:|
 | Every step | About 0.43% | About 0.43% |
 | Every 8 steps | About 3.34% | About 0.43% |
-| Every 16 steps | About 6.79% | About 0.46% |
+| Every 16 steps | About 6.80% | About 0.46% |
 
 **The motion improvement appears when contacts are reused, not with every-step
 refresh.** Sixteen steps is only a test setting. The [code](run.py) contains

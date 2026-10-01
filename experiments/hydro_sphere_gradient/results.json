@@ -1,5 +1,5 @@
 {
-  "commit": "7fa94b3e700f7cc7f0425e4dfeb33facc7463442",
+  "commit": "665d9d208da50466e28709919a13c7b6e93f6971",
   "warp_version": "1.17.0",
   "device": "NVIDIA GeForce RTX 3070 Ti",
   "setup": {
@@ -16,32 +16,32 @@
   "exact_stiffness_N_m": 1256.6370614359173,
   "original": {
     "contacts": 24460,
-    "force_N": 13.611100909587794,
+    "force_N": 13.611100909587796,
     "stiffness_N_m": 1409.1795998902703
   },
   "projected": {
     "contacts": 24460,
     "force_N": 13.61110097969907,
-    "stiffness_N_m": 1253.004517773334
+    "stiffness_N_m": 1253.0045177733339
   },
   "motion": [
     {
       "refresh_steps": 1,
-      "original_rms_error_percent": 0.4260409804321408,
-      "projected_rms_error_percent": 0.4260712701567082,
-      "max_position_difference_m": 7.450580596923828e-09
+      "original_rms_error_percent": 0.4258140172630046,
+      "projected_rms_error_percent": 0.4262678491369904,
+      "max_position_difference_m": 2.2351741790771484e-08
     },
     {
       "refresh_steps": 8,
-      "original_rms_error_percent": 3.3401739498829257,
-      "projected_rms_error_percent": 0.42681056841584714,
-      "max_position_difference_m": 4.30867075920105e-05
+      "original_rms_error_percent": 3.3413554002644132,
+      "projected_rms_error_percent": 0.4273110113621478,
+      "max_position_difference_m": 4.3101608753204346e-05
     },
     {
       "refresh_steps": 16,
-      "original_rms_error_percent": 6.794410769779004,
-      "projected_rms_error_percent": 0.456258133761466,
-      "max_position_difference_m": 8.8520348072052e-05
+      "original_rms_error_percent": 6.795451269222854,
+      "projected_rms_error_percent": 0.4564114925172625,
+      "max_position_difference_m": 8.862465620040894e-05
     }
   ],
   "checks_passed": true
