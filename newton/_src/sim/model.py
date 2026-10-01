@@ -1318,7 +1318,7 @@ class Model:
 
     @property
     def shape_collision_filter_pairs(self) -> AbstractSet[tuple[int, int]]:
-        """Read-only set of canonical shape index pairs that should not collide."""
+        """Read-only set of explicit canonical shape index pairs that should not collide."""
         return self._shape_collision_filter_pairs
 
     def shape_collision_filter_contains(self, shape_a: SupportsIndex, shape_b: SupportsIndex) -> bool:
@@ -1445,7 +1445,6 @@ class Model:
             "joint_coord": Model.AttributeFrequency.JOINT_COORD,
             "joint_constraint": Model.AttributeFrequency.JOINT_CONSTRAINT,
             "articulation": Model.AttributeFrequency.ARTICULATION,
-            "equality_constraint": "mujoco:equality_constraint",
             "constraint_mimic": Model.AttributeFrequency.CONSTRAINT_MIMIC,
             "particle": Model.AttributeFrequency.PARTICLE,
             "edge": Model.AttributeFrequency.EDGE,
